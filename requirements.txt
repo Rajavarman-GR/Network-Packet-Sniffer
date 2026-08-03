@@ -1,0 +1,7 @@
+scapy
+psutil
+numpy
+matplotlib
+seaborn
+joblib
+panda
