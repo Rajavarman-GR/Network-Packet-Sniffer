@@ -1,6 +1,6 @@
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog, messagebox
 
 import scapy.all as scapy
 
@@ -93,7 +93,7 @@ class PacketSnifferApp:
 
         file_menu.add_separator()
 
-        file_menu.add_command(label="Export")
+        file_menu.add_command(label="Export", command=self.export_packets)
 
         file_menu.add_separator()
 
@@ -109,9 +109,9 @@ class PacketSnifferApp:
             tearoff=0
         )
 
-        capture_menu.add_command(label="Start Capture")
+        capture_menu.add_command(label="Start Capture", command=self.start_capture)
 
-        capture_menu.add_command(label="Stop Capture")
+        capture_menu.add_command(label="Stop Capture", command=self.stop_capture)
 
         #################################################
 
@@ -120,7 +120,13 @@ class PacketSnifferApp:
             tearoff=0
         )
 
-        help_menu.add_command(label="About")
+        help_menu.add_command(
+            label="About",
+            command=lambda: messagebox.showinfo(
+                "About",
+                "Advanced AI Network Packet Sniffer\nVersion 2.0"
+            )
+        )
 
         #################################################
 
@@ -308,6 +314,7 @@ class PacketSnifferApp:
         self.export_button = tk.Button(
             toolbar,
             text="Export",
+            command=self.export_packets,
             bg=PRIMARY,
             fg="white",
             width=12,
@@ -640,14 +647,45 @@ class PacketSnifferApp:
         if interface == "":
             return
 
+        try:
+            self.sniffer.start(
+                interface,
+                self.packet_callback
+            )
+        except Exception as exc:
+            self._show_capture_error(interface, exc)
+            return
+
         self.status.config(
             text=f"Capturing on {interface}"
         )
 
-        self.sniffer.start(
-            interface,
-            self.packet_callback
+        # AsyncSniffer opens the raw socket on a background thread, so a
+        # permission error (e.g. not running as root/admin) won't raise
+        # here - it lands on sniffer.sniffer.exception a moment later.
+        self.root.after(300, self._check_capture_health, interface)
+
+    # --------------------------------------------------
+
+    def _check_capture_health(self, interface):
+
+        exc = getattr(self.sniffer.sniffer, "exception", None)
+
+        if exc is not None:
+            self.sniffer.running = False
+            self._show_capture_error(interface, exc)
+
+    # --------------------------------------------------
+
+    def _show_capture_error(self, interface, exc):
+
+        messagebox.showerror(
+            "Capture Error",
+            f"Could not start capture on {interface}.\n\n"
+            f"{exc}\n\n"
+            "Packet capture usually requires root/administrator privileges."
         )
+        self.status.config(text="Ready")
 
     # --------------------------------------------------
 
@@ -662,6 +700,23 @@ class PacketSnifferApp:
     # --------------------------------------------------
 
     def packet_callback(self, packet):
+
+        selected_protocol = self.protocol_var.get()
+
+        if selected_protocol and selected_protocol != "ALL":
+
+            layer_map = {
+                "TCP": scapy.TCP,
+                "UDP": scapy.UDP,
+                "ICMP": scapy.ICMP,
+                "ARP": scapy.ARP,
+                "DNS": scapy.DNS,
+            }
+
+            layer = layer_map.get(selected_protocol)
+
+            if layer is not None and not packet.haslayer(layer):
+                return
 
         self.packet_count += 1
 
@@ -867,7 +922,18 @@ class PacketSnifferApp:
 
         keyword = self.search_entry.get().lower()
 
-        for row in self.packet_table.get_children():
+        if not keyword:
+            return
+
+        rows = self.packet_table.get_children()
+
+        current = self.packet_table.selection()
+
+        start_index = rows.index(current[0]) + 1 if current and current[0] in rows else 0
+
+        ordered = rows[start_index:] + rows[:start_index]
+
+        for row in ordered:
 
             values = self.packet_table.item(row)["values"]
 
@@ -879,7 +945,33 @@ class PacketSnifferApp:
                 self.packet_table.focus(row)
                 self.packet_table.see(row)
 
-                break
+                return
+
+        messagebox.showinfo("Search", f"No matches found for '{keyword}'.")
+
+    # --------------------------------------------------
+
+    def export_packets(self):
+
+        if not self.packet_list:
+            messagebox.showinfo("Export", "No packets captured yet.")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".pcap",
+            filetypes=[("PCAP files", "*.pcap"), ("All files", "*.*")]
+        )
+
+        if not filepath:
+            return
+
+        try:
+            scapy.wrpcap(filepath, self.packet_list)
+        except Exception as exc:
+            messagebox.showerror("Export Error", f"Could not save capture.\n\n{exc}")
+            return
+
+        messagebox.showinfo("Export", f"Saved {len(self.packet_list)} packets to {filepath}")
 
     # --------------------------------------------------
 

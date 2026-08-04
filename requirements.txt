@@ -4,4 +4,4 @@ numpy
 matplotlib
 seaborn
 joblib
-panda
+pandas
