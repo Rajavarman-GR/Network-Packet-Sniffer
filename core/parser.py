@@ -20,12 +20,24 @@ def has_udp(packet):
 
 
 def has_icmp(packet):
-    return packet.haslayer(scapy.ICMP) or packet.haslayer(scapy.ICMPv6EchoRequest)
+    return packet.haslayer(scapy.ICMP) or _has_icmpv6_echo(packet)
 
 
-def get_packet_metadata(packet):
+def _has_icmpv6_echo(packet):
+    return (
+        packet.haslayer(scapy.ICMPv6EchoRequest)
+        or packet.haslayer(scapy.ICMPv6EchoReply)
+    )
+
+
+def get_packet_metadata(packet, timestamp_format="%H:%M:%S"):
+    try:
+        timestamp = time.strftime(timestamp_format, time.localtime(float(packet.time)))
+    except (AttributeError, TypeError, ValueError):
+        timestamp = time.strftime(timestamp_format)
+
     metadata = {
-        "timestamp": time.strftime("%H:%M:%S"),
+        "timestamp": timestamp,
         "src": "",
         "dst": "",
         "protocol": "OTHER",
@@ -53,7 +65,15 @@ def get_packet_metadata(packet):
         metadata["protocol"] = "ARP"
         return metadata
 
-    if packet.haslayer(scapy.TCP):
+    if packet.haslayer(scapy.DNS):
+        metadata["protocol"] = "DNS"
+        if packet.haslayer(scapy.TCP):
+            metadata["sport"] = packet[scapy.TCP].sport
+            metadata["dport"] = packet[scapy.TCP].dport
+        elif packet.haslayer(scapy.UDP):
+            metadata["sport"] = packet[scapy.UDP].sport
+            metadata["dport"] = packet[scapy.UDP].dport
+    elif packet.haslayer(scapy.TCP):
         tcp_layer = packet[scapy.TCP]
         metadata["protocol"] = "TCP"
         metadata["sport"] = tcp_layer.sport
@@ -65,9 +85,7 @@ def get_packet_metadata(packet):
         metadata["dport"] = udp_layer.dport
     elif packet.haslayer(scapy.ICMP):
         metadata["protocol"] = "ICMP"
-    elif packet.haslayer(scapy.ICMPv6EchoRequest) or packet.haslayer(scapy.ICMPv6EchoReply):
+    elif _has_icmpv6_echo(packet):
         metadata["protocol"] = "ICMPv6"
-    elif packet.haslayer(scapy.DNS):
-        metadata["protocol"] = "DNS"
 
     return metadata

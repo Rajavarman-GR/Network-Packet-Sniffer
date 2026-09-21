@@ -1,460 +1,89 @@
 # Network Packet Sniffer
 
-A Python-based desktop application for capturing, inspecting, and analyzing live network traffic using **Scapy** and **Tkinter**. The application provides a graphical interface for real-time packet capture, protocol filtering, packet inspection, live statistics, and PCAP export, making it a useful educational tool for learning networking and packet analysis.
+A local Python desktop application for capturing, inspecting, filtering, and exporting network packets with Scapy and Tkinter. It is an educational analyzer, not an IDS or a replacement for Wireshark.
 
-> **Note:** This project is designed for educational and learning purposes. It is **not** intended to replace professional packet analysis tools such as Wireshark or tcpdump.
+## Features
 
----
+- Live capture through Scapy `AsyncSniffer`.
+- Tkinter-safe packet delivery through a queue and the main event loop.
+- Protocol filters for `ALL`, TCP, UDP, ICMP, ICMPv6, ARP, and DNS.
+- DNS filtering for both UDP/53 and TCP/53.
+- Stable packet selection while sorting, searching, and evicting old rows.
+- Bounded packet retention with configurable `max_packets`.
+- Visible count of packets dropped when the capture queue is full.
+- IPv4, IPv6, ARP, TCP, UDP, ICMP, ICMPv6 Echo, and DNS metadata parsing.
+- PCAP import and export through Scapy.
+- Configurable theme, interface, protocol, timestamp format, and auto-scroll.
+- Optional threat-detector integration when a compatible local model exists.
 
-# Overview
+## Architecture
 
-The Network Packet Sniffer captures live packets from a selected network interface and presents them in an interactive graphical dashboard. Users can filter traffic by protocol, inspect detailed packet information, search captured packets, monitor protocol statistics, and export captured traffic for further analysis.
+Scapy capture callbacks enqueue packets only. Tkinter periodically drains the queue on the GUI thread, parses metadata, updates statistics, and inserts rows into the Treeview. `core/packet_manager.py` owns monotonic IDs and FIFO retention; the GUI uses those IDs as Treeview item identifiers.
 
-The project demonstrates practical concepts in networking, packet parsing, GUI development, and Python application design while providing an intuitive interface for understanding network communication.
+## Installation
 
----
-
-# Features
-
-### Live Packet Capture
-
-- Capture live network traffic from available network interfaces
-- Detect interfaces automatically using **psutil**
-- Start and stop captures with a single click
-- Asynchronous packet capture using **Scapy AsyncSniffer**
-
----
-
-### Protocol Filtering
-
-Capture all traffic or filter by:
-
-- TCP
-- UDP
-- ICMP
-- ARP
-- DNS
-- ALL Traffic
-
----
-
-### Packet Table
-
-Display captured packets with:
-
-- Timestamp
-- Source IP Address
-- Destination IP Address
-- Protocol
-- Source Port
-- Destination Port
-- Packet Length
-
-Additional features include:
-
-- Color-coded protocol highlighting
-- Scrollable packet list
-- Automatic live updates
-
----
-
-### Packet Inspection
-
-Selecting a packet displays detailed information including:
-
-#### Ethernet Layer
-
-- Source MAC Address
-- Destination MAC Address
-- EtherType
-
-#### IP Layer
-
-- Source Address
-- Destination Address
-- TTL
-- Identification
-- Flags
-- Protocol
-
-#### Transport Layer
-
-TCP
-
-- Source Port
-- Destination Port
-- Sequence Number
-- Acknowledgement Number
-- TCP Flags
-
-UDP
-
-- Source Port
-- Destination Port
-- Length
-
-ICMP
-
-- Type
-- Code
-- Checksum
-
----
-
-### Payload Analysis
-
-Inspect packet payloads in multiple formats:
-
-- ASCII representation
-- Hexadecimal dump
-- Raw payload data
-
----
-
-### Search Functionality
-
-Search captured packets by:
-
-- IP Address
-- Protocol
-- Port Number
-
-Repeated searches automatically cycle through matching packets.
-
----
-
-### Live Statistics
-
-Monitor capture statistics in real time:
-
-- Total Packets
-- TCP Packets
-- UDP Packets
-- ICMP Packets
-
----
-
-### PCAP Export
-
-Export captured traffic as a **.pcap** file for analysis using tools such as:
-
-- Wireshark
-- tcpdump
-- Tshark
-
----
-
-### AI Detection Scaffold
-
-The repository includes a placeholder AI module:
-
-```
-ai/detector.py
-```
-
-This module is intended for future threat detection functionality but is **not currently connected** to the packet capture workflow.
-
----
-
-# Screenshots
-
-> Add screenshots of your application here.
-
-Example:
-
-```
-screenshots/
-├── dashboard.png
-├── packet-details.png
-├── live-capture.png
-└── search-feature.png
-```
-
----
-
-# Technology Stack
-
-| Component | Technology |
-|------------|------------|
-| Programming Language | Python 3.9+ |
-| Packet Capture | Scapy |
-| GUI Framework | Tkinter |
-| Interface Detection | psutil |
-| PCAP Support | Scapy |
-
----
-
-# Project Structure
-
-```
-Network-Packet-Sniffer/
-│
-├── main.py                     # Application entry point
-├── requirements.txt
-│
-├── core/
-│   ├── sniffer.py              # Async packet capture
-│   ├── parser.py               # Packet parsing utilities
-│   └── interfaces.py           # Network interface detection
-│
-├── gui/
-│   └── main_window.py          # Main graphical interface
-│
-├── ai/
-│   └── detector.py             # AI detection scaffold
-│
-├── utils/
-│   ├── constants.py            # UI constants and color palette
-│   ├── validator.py            # Validation utilities
-│   └── logger.py               # Logging utilities
-│
-└── README.md
-```
-
----
-
-# Application Workflow
-
-```
-User
-   │
-   ▼
-Select Network Interface
-   │
-   ▼
-Choose Protocol Filter
-   │
-   ▼
-Start Packet Capture
-   │
-   ▼
-Scapy AsyncSniffer
-   │
-   ▼
-Packet Parser
-   │
-   ▼
-Update GUI
-   │
-   ├──────────────► Packet Table
-   │
-   ├──────────────► Packet Details
-   │
-   ├──────────────► Live Statistics
-   │
-   └──────────────► Export PCAP
-```
-
----
-
-# Requirements
-
-### Operating System
-
-- Windows
-- Linux
-- macOS
-
-### Python
-
-- Python 3.9 or newer
-
-### Packet Capture Permissions
-
-Raw packet capture requires elevated privileges.
-
-#### Linux
-
-Run using:
+Use Python 3.9 or newer, then install the local dependencies:
 
 ```bash
-sudo python3 main.py
+python -m pip install -r requirements.txt
 ```
 
-#### Windows
+Tkinter must also be installed. Most Windows Python installations include it; on Debian/Ubuntu install the `python3-tk` package.
 
-- Install **Npcap**
-- Run the terminal as Administrator
+## Capture requirements
 
-#### macOS
+Capture only traffic on networks you own or are authorized to monitor.
 
-Run using:
+- **Windows:** install Npcap and run PowerShell or Command Prompt with Administrator privileges. Scapy interface names can differ from readable Windows adapter names; the application resolves known mappings where possible.
+- **Linux:** install libpcap and run with the required privileges, for example `sudo python3 main.py`.
+- **macOS:** install libpcap permissions as required by the system and run with appropriate privileges.
 
-```bash
-sudo python3 main.py
-```
-
----
-
-# Installation
-
-Clone the repository:
-
-```bash
-git clone https://github.com/Rajavarman-GR/Network-Packet-Sniffer.git
-```
-
-Navigate into the project:
-
-```bash
-cd Network-Packet-Sniffer
-```
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-# Running the Application
-
-### Linux / macOS
-
-```bash
-sudo python3 main.py
-```
-
-### Windows
-
-Run Command Prompt or PowerShell as Administrator.
+Start the application with:
 
 ```bash
 python main.py
 ```
 
----
+## Filters and PCAP files
 
-# How to Use
+The protocol selector supports `ALL`, TCP, UDP, ICMP, ICMPv6, ARP, and DNS. Source IP, destination IP, and port values are validated before they are included in the BPF expression. Imported PCAP packets use the same parser and retention limit as live packets, but they do not contribute to live bandwidth measurements. Export writes the retained packets currently shown by the application.
 
-1. Launch the application.
-2. Select a network interface.
-3. Choose a protocol filter (or **ALL**).
-4. Click **Start** to begin capturing packets.
-5. Watch packets appear in real time.
-6. Select any packet to inspect its headers and payload.
-7. Use the search feature to locate specific packets.
-8. Export the captured traffic as a PCAP file when needed.
+## Configuration
 
----
+Settings are stored in `config.json` in the project directory. The file is ignored by Git. Missing, malformed, or invalid values fall back to safe defaults:
 
-# Supported Protocols
+```json
+{
+  "theme": "dark",
+  "max_packets": 10000,
+  "default_interface": "",
+  "default_protocol": "ALL",
+  "auto_scroll": true,
+  "timestamp_format": "%H:%M:%S"
+}
+```
 
-| Protocol | Supported |
-|----------|-----------|
-| Ethernet | ✅ |
-| IPv4 | ✅ |
-| TCP | ✅ |
-| UDP | ✅ |
-| ICMP | ✅ |
-| ARP | ✅ |
-| DNS | ✅ |
+## AI limitations
 
----
+`ai/detector.py` loads `ai/threat_model.pkl` only when that file exists and is compatible with the detector. No model is included in this repository, so the normal status is **AI: unavailable** and the threat count remains zero. The application does not invent predictions or train a model.
 
-# Sample Packet Information
+## Testing
 
-| Field | Example |
-|--------|----------|
-| Timestamp | 14:42:17 |
-| Source IP | 192.168.1.15 |
-| Destination IP | 142.250.183.78 |
-| Protocol | TCP |
-| Source Port | 51542 |
-| Destination Port | 443 |
-| Length | 66 Bytes |
+Run the local test suite with:
 
----
+```bash
+python -m unittest discover -s tests -p "test_*.py" -v
+python -m compileall .
+```
 
-# Current Limitations
+The repository tests cover protocol metadata, packet timestamps, filters, retention IDs, and malformed configuration handling. Live capture and Tkinter interactions require a suitable desktop and capture environment and are not covered by automated GUI tests.
 
-This application is intended as an educational packet analyzer rather than a full-featured network analysis suite.
+## Known limitations and security
 
-Current limitations include:
+- Live capture requires operating-system permissions and a functioning Npcap/libpcap installation.
+- PCAP file I/O runs in background workers, but very large captures still require memory and time to decode and render retained rows.
+- The application displays packet payloads and should not be used to expose sensitive captures to unauthorized users.
+- The optional model has no security or accuracy guarantee and should not be used for automated incident decisions.
+- No session reconstruction, packet replay, or protocol dissection beyond the displayed metadata is provided.
 
-- AI threat detection module is present but not integrated into the live capture workflow
-- No machine learning model has been trained or deployed
-- The "Threats" statistic always remains zero
-- The displayed "Bandwidth" statistic is not calculated from real network throughput
-- The Settings button is currently a placeholder
-- `utils/logger.py` is included but not used
-- `utils/validator.py` is included but not used
-- Interface names returned by **psutil** may differ from those expected by Scapy/Npcap on Windows
-- No packet filtering using Berkeley Packet Filters (BPF)
-- No packet replay functionality
-- No session reconstruction
-- No automated unit or integration tests
-
----
-
-# Future Enhancements
-
-Potential improvements include:
-
-- Integrate the AI Threat Detector into the packet processing pipeline
-- Train a machine learning model for anomaly detection
-- Calculate live bandwidth and throughput statistics
-- Add protocol-specific packet filters
-- Implement Berkeley Packet Filter (BPF) support
-- Add packet replay functionality
-- Implement flow/session reconstruction
-- Add packet capture history
-- Support dark mode and customizable themes
-- Complete the Settings dialog
-- Improve Windows interface detection
-- Optimize packet rendering for large captures
-- Add multithreading for improved responsiveness
-- Write comprehensive unit and integration tests
-- Containerize the application using Docker
-
----
-
-# Learning Outcomes
-
-This project helped reinforce practical knowledge in:
-
-- Computer Networking
-- TCP/IP Protocol Suite
-- Packet Capture using Scapy
-- Network Packet Parsing
-- GUI Development with Tkinter
-- Asynchronous Programming
-- Object-Oriented Python
-- PCAP File Generation
-- Network Protocol Analysis
-- Python Application Architecture
-
----
-
-# Disclaimer
-
-This project is intended solely for educational purposes.
-
-It captures packets only from network interfaces accessible to the host system and requires appropriate permissions. Users should only capture traffic on networks they own or are explicitly authorized to monitor.
-
-This application is **not** an Intrusion Detection System (IDS), Intrusion Prevention System (IPS), or AI-powered threat detection platform. Although the repository includes an AI module scaffold, no active machine learning or automated threat detection functionality is currently implemented.
-
----
-
-# Author
-
-**Rajavarman G.R.**
-
-Cybersecurity Undergraduate | Security Engineering | Python | Networking
-
-**GitHub**
-
-https://github.com/Rajavarman-GR
-
-**LinkedIn**
-
-https://www.linkedin.com/in/rajavarman-g-r
-
----
-
-# License
-
-No license has currently been specified for this repository.
-
-If you plan to make the project open source, adding an MIT License or Apache 2.0 License is recommended.
+This project is for authorized educational and diagnostic use only.

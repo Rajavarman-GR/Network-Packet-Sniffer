@@ -1,3 +1,5 @@
+import queue
+import threading
 import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -6,11 +8,13 @@ import scapy.all as scapy
 
 from ai.detector import ThreatDetector
 from core.filter_engine import build_bpf_filter
-from core.interfaces import get_network_interfaces
+from core.interfaces import get_network_interfaces, resolve_scapy_interface
+from core.packet_manager import PacketManager
 from core.parser import get_packet_metadata
 from core.sniffer import PacketSniffer
 from gui.settings_dialog import SettingsDialog
 from utils.config import load_config, save_config
+from utils.logger import log_error, log_warning
 from utils.constants import (
     DARK_BG,
     HEADER_BG,
@@ -43,10 +47,18 @@ class PacketSnifferApp:
         self.udp_count = 0
         self.icmp_count = 0
         self.threat_count = 0
+        self.dropped_packets = 0
+        self.packet_manager = PacketManager(self._configured_max_packets())
         self.packet_rows = []
+        self.packet_queue = queue.Queue(maxsize=1000)
+        self.drain_after_id = None
+        self.health_after_id = None
+        self.io_queue = queue.Queue()
+        self.io_poll_after_id = None
+        self.io_busy = False
         self.current_sort_col = None
         self.current_sort_desc = False
-        self.max_packets = int(self.config.get("max_packets", 10000))
+        self.max_packets = self._configured_max_packets()
         self.bandwidth_bytes = 0
         self.bandwidth_start_time = None
 
@@ -59,6 +71,12 @@ class PacketSnifferApp:
         self.create_statusbar()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.apply_theme()
+
+    def _configured_max_packets(self):
+        try:
+            return max(1, int(self.config.get("max_packets", 10000)))
+        except (TypeError, ValueError):
+            return 10000
 
     def configure_window(self):
         self.root.title("Advanced AI Network Packet Sniffer")
@@ -300,6 +318,9 @@ class PacketSnifferApp:
         self.icmp_packets = tk.Label(stats, text="ICMP : 0", bg=PANEL_BG, fg="white")
         self.icmp_packets.pack(anchor="w", padx=10)
 
+        self.dropped_packets_label = tk.Label(stats, text="Dropped : 0", bg=PANEL_BG, fg=WARNING)
+        self.dropped_packets_label.pack(anchor="w", padx=10)
+
         self.bandwidth = tk.Label(stats, text="Bandwidth : 0 KB/s", bg=PANEL_BG, fg="white")
         self.bandwidth.pack(anchor="w", padx=10)
 
@@ -332,7 +353,11 @@ class PacketSnifferApp:
             return
 
         try:
-            self.sniffer.start(interface, self.packet_callback, filter_expression=build_bpf_filter(protocol))
+            self.sniffer.start(
+                resolve_scapy_interface(interface),
+                self.packet_callback,
+                filter_expression=build_bpf_filter(protocol),
+            )
         except Exception as exc:
             self._show_capture_error(interface, exc)
             return
@@ -342,15 +367,31 @@ class PacketSnifferApp:
         self.status.config(text=f"Capturing on {interface}")
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
-        self.root.after(300, self._check_capture_health, interface)
+        self.health_after_id = self.root.after(300, self._check_capture_health, interface)
+        self._schedule_packet_drain()
 
     def _check_capture_health(self, interface):
-        exc = getattr(self.sniffer.sniffer, "exception", None)
+        self.health_after_id = None
+        if not self.sniffer.running:
+            return
+
+        capture = self.sniffer.sniffer
+        exc = getattr(capture, "exception", None) if capture is not None else None
         if exc is not None:
-            self.sniffer.running = False
+            self.sniffer.stop()
             self._show_capture_error(interface, exc)
             self.start_button.config(state="normal")
             self.stop_button.config(state="disabled")
+            return
+
+        if capture is None or not getattr(capture, "running", True):
+            self.sniffer.stop()
+            self.status.config(text="Capture stopped")
+            self.start_button.config(state="normal")
+            self.stop_button.config(state="disabled")
+            return
+
+        self.health_after_id = self.root.after(300, self._check_capture_health, interface)
 
     def _show_capture_error(self, interface, exc):
         messagebox.showerror(
@@ -361,28 +402,58 @@ class PacketSnifferApp:
 
     def stop_capture(self):
         if not self.sniffer.running:
+            self._cancel_health_check()
             return
 
         self.sniffer.stop()
+        self._cancel_health_check()
         self.status.config(text="Capture Stopped")
         self.start_button.config(state="normal")
         self.stop_button.config(state="disabled")
 
     def packet_callback(self, packet):
-        selected_protocol = self.protocol_var.get()
-        if selected_protocol and selected_protocol != "ALL":
-            if not self._packet_matches_protocol(packet, selected_protocol):
-                return
+        try:
+            self.packet_queue.put_nowait(packet)
+        except queue.Full:
+            self.dropped_packets += 1
+            log_warning("Packet queue full; dropping a packet before GUI processing")
 
+    def _cancel_health_check(self):
+        if self.health_after_id is None:
+            return
+        try:
+            self.root.after_cancel(self.health_after_id)
+        except tk.TclError:
+            pass
+        self.health_after_id = None
+
+    def _schedule_packet_drain(self):
+        if self.drain_after_id is None:
+            self.drain_after_id = self.root.after(50, self._drain_packet_queue)
+
+    def _drain_packet_queue(self):
+        self.drain_after_id = None
+        for _ in range(200):
+            try:
+                packet = self.packet_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._process_packet(packet, is_live=True)
+
+        if self.sniffer.running or not self.packet_queue.empty():
+            self._schedule_packet_drain()
+
+    def _process_packet(self, packet, is_live=False, refresh=True):
         self.packet_count += 1
-        self.bandwidth_bytes += len(packet)
-        metadata = get_packet_metadata(packet)
+        if is_live:
+            self.bandwidth_bytes += len(packet)
+        metadata = get_packet_metadata(packet, self.config.get("timestamp_format", "%H:%M:%S"))
 
         if self.threat_detector.is_available():
             if self.threat_detector.detect(packet):
                 self.threat_count += 1
 
-        self._append_packet_row(packet, metadata)
+        self._append_packet_row(packet, metadata, refresh=refresh)
 
     def _append_packet_row(self, packet, metadata, refresh=True):
         if metadata["protocol"] == "TCP":
@@ -392,25 +463,35 @@ class PacketSnifferApp:
         elif metadata["protocol"] == "ICMP" or metadata["protocol"] == "ICMPv6":
             self.icmp_count += 1
 
-        while len(self.packet_rows) >= self.max_packets:
-            self.packet_rows.pop(0)
+        record, evicted = self.packet_manager.add(packet, metadata)
+        self.packet_rows = self.packet_manager.records()
 
-        self.packet_rows.append(
-            {
-                "packet": packet,
-                "timestamp": metadata["timestamp"],
-                "src": metadata["src"],
-                "dst": metadata["dst"],
-                "protocol": metadata["protocol"],
-                "sport": metadata["sport"],
-                "dport": metadata["dport"],
-                "length": metadata["length"],
-            }
-        )
+        if evicted is not None and self.packet_table.exists(str(evicted["id"])):
+            self.packet_table.delete(str(evicted["id"]))
 
         if refresh:
-            self._refresh_packet_table()
+            self._insert_packet_row(record)
         self._update_statistics()
+
+    def _insert_packet_row(self, row):
+        values = (
+            row["timestamp"], row["src"], row["dst"], row["protocol"],
+            row["sport"], row["dport"], row["length"],
+        )
+        position = "end"
+        if self.current_sort_col:
+            new_value = self._sort_value(row, self.current_sort_col)
+            visible = self.packet_table.get_children()
+            for index, item in enumerate(visible):
+                existing = self.packet_manager.get(item)
+                if existing is None:
+                    continue
+                if (new_value < self._sort_value(existing, self.current_sort_col)) != self.current_sort_desc:
+                    position = index
+                    break
+        self.packet_table.insert("", position, iid=str(row["id"]), values=values, tags=(row["protocol"],))
+        if self.config.get("auto_scroll", True) and position == "end":
+            self.packet_table.yview_moveto(1)
 
     def _refresh_packet_table(self):
         for item in self.packet_table.get_children():
@@ -424,7 +505,7 @@ class PacketSnifferApp:
                 reverse=self.current_sort_desc,
             )
 
-        for index, row in enumerate(rows):
+        for row in rows:
             values = (
                 row["timestamp"],
                 row["src"],
@@ -434,7 +515,7 @@ class PacketSnifferApp:
                 row["dport"],
                 row["length"],
             )
-            self.packet_table.insert("", "end", iid=str(index), values=values, tags=(row["protocol"],))
+            self.packet_table.insert("", "end", iid=str(row["id"]), values=values, tags=(row["protocol"],))
 
         if self.config.get("auto_scroll", True):
             self.packet_table.yview_moveto(1)
@@ -444,6 +525,7 @@ class PacketSnifferApp:
         self.tcp_packets.config(text=f"TCP : {self.tcp_count}")
         self.udp_packets.config(text=f"UDP : {self.udp_count}")
         self.icmp_packets.config(text=f"ICMP : {self.icmp_count}")
+        self.dropped_packets_label.config(text=f"Dropped : {self.dropped_packets}")
         self.threats.config(text=f"Threats : {self.threat_count}")
 
         if self.bandwidth_start_time is not None:
@@ -451,21 +533,6 @@ class PacketSnifferApp:
             if elapsed > 0:
                 kbps = (self.bandwidth_bytes / 1024) / elapsed
                 self.bandwidth.config(text=f"Bandwidth : {kbps:.1f} KB/s")
-
-    def _packet_matches_protocol(self, packet, selected_protocol):
-        layer_map = {
-            "TCP": scapy.TCP,
-            "UDP": scapy.UDP,
-            "ICMP": scapy.ICMP,
-            "ARP": scapy.ARP,
-            "DNS": scapy.DNS,
-            "ICMPv6": scapy.ICMPv6EchoRequest,
-        }
-
-        layer = layer_map.get(selected_protocol)
-        if layer is None:
-            return True
-        return packet.haslayer(layer)
 
     def sort_by_column(self, column_name):
         if self.current_sort_col == column_name:
@@ -500,8 +567,9 @@ class PacketSnifferApp:
             return
 
         iid = selected[0]
-        index = int(iid)
-        row = self.packet_rows[index]
+        row = self.packet_manager.get(iid)
+        if row is None:
+            return
         packet = row["packet"]
 
         self.packet_details.delete("1.0", "end")
@@ -584,7 +652,10 @@ class PacketSnifferApp:
         messagebox.showinfo("Search", f"No matches found for '{keyword}'.")
 
     def export_packets(self):
-        if not self.packet_rows:
+        if self.io_busy:
+            return
+        rows = self.packet_manager.records()
+        if not rows:
             messagebox.showinfo("Export", "No packets captured yet.")
             return
 
@@ -596,27 +667,75 @@ class PacketSnifferApp:
             messagebox.showerror("Export Error", "Please provide a valid export path.")
             return
 
+        self.io_busy = True
+        self.status.config(text="Exporting capture...")
+        threading.Thread(
+            target=self._export_worker,
+            args=(filepath, [row["packet"] for row in rows], len(rows)),
+            daemon=True,
+        ).start()
+        self._schedule_io_poll()
+
+    def _export_worker(self, filepath, packets, packet_count):
         try:
-            scapy.wrpcap(filepath, [row["packet"] for row in self.packet_rows])
+            scapy.wrpcap(filepath, packets)
+            result = ("export", filepath, packet_count, None)
         except Exception as exc:
-            messagebox.showerror("Export Error", f"Could not save capture.\n\n{exc}")
+            result = ("export", filepath, packet_count, exc)
+        self.io_queue.put(result)
+
+    def _schedule_io_poll(self):
+        if self.io_poll_after_id is None:
+            self.io_poll_after_id = self.root.after(50, self._poll_io_results)
+
+    def _poll_io_results(self):
+        self.io_poll_after_id = None
+        try:
+            operation, filepath, value, error = self.io_queue.get_nowait()
+        except queue.Empty:
+            if self.io_busy:
+                self._schedule_io_poll()
             return
 
-        messagebox.showinfo("Export", f"Saved {len(self.packet_rows)} packets to {filepath}")
+        self.io_busy = False
+        if error is not None:
+            title = "Open PCAP" if operation == "load" else "Export Error"
+            messagebox.showerror(title, f"Could not process capture.\n\n{error}")
+            self.status.config(text="Ready")
+            return
+
+        if operation == "load":
+            self.new_capture()
+            for packet in value:
+                self._process_packet(packet, refresh=False)
+            self._refresh_packet_table()
+            self._update_statistics()
+            self.status.config(text=f"Loaded {len(value)} packets from {filepath}")
+        else:
+            messagebox.showinfo("Export", f"Saved {value} packets to {filepath}")
+            self.status.config(text="Ready")
 
     def create_statusbar(self):
-        self.status = tk.Label(self.root, text=" Ready", anchor="w", bg=HEADER_BG, fg="white", font=("Segoe UI", 10))
+        ai_state = "available" if self.threat_detector.is_available() else "unavailable"
+        self.status = tk.Label(self.root, text=f" Ready | AI: {ai_state}", anchor="w", bg=HEADER_BG, fg="white", font=("Segoe UI", 10))
         self.status.pack(fill="x", side="bottom")
 
     def new_capture(self):
         self.stop_capture()
+        while not self.packet_queue.empty():
+            try:
+                self.packet_queue.get_nowait()
+            except queue.Empty:
+                break
         self.packet_count = 0
         self.tcp_count = 0
         self.udp_count = 0
         self.icmp_count = 0
         self.threat_count = 0
+        self.dropped_packets = 0
         self.bandwidth_bytes = 0
         self.bandwidth_start_time = None
+        self.packet_manager.clear()
         self.packet_rows = []
         self.packet_details.delete("1.0", "end")
         self._refresh_packet_table()
@@ -624,30 +743,33 @@ class PacketSnifferApp:
         self.status.config(text="New capture prepared")
 
     def open_pcap(self):
+        if self.io_busy:
+            return
         filepath = filedialog.askopenfilename(defaultextension=".pcap", filetypes=[("PCAP files", "*.pcap"), ("All files", "*.*")])
         if not filepath:
             return
 
-        try:
-            packets = scapy.rdpcap(filepath)
-        except Exception as exc:
-            messagebox.showerror("Open PCAP", f"Could not open file.\n\n{exc}")
-            return
+        self.io_busy = True
+        self.status.config(text="Loading PCAP...")
+        threading.Thread(target=self._load_pcap_worker, args=(filepath,), daemon=True).start()
+        self._schedule_io_poll()
 
-        self.new_capture()
-        for packet in packets:
-            metadata = get_packet_metadata(packet)
-            self._append_packet_row(packet, metadata, refresh=False)
-        self._refresh_packet_table()
-        self._update_statistics()
-        self.status.config(text=f"Loaded {len(packets)} packets from {filepath}")
+    def _load_pcap_worker(self, filepath):
+        try:
+            result = ("load", filepath, scapy.rdpcap(filepath), None)
+        except Exception as exc:
+            result = ("load", filepath, None, exc)
+        self.io_queue.put(result)
 
     def open_settings(self):
         SettingsDialog(self.root, self.config, self._apply_settings)
 
     def _apply_settings(self, config):
         self.config = config
-        self.max_packets = int(self.config.get("max_packets", 10000))
+        self.max_packets = self._configured_max_packets()
+        self.packet_manager.set_max_packets(self.max_packets)
+        self.packet_rows = self.packet_manager.records()
+        self._refresh_packet_table()
         self.apply_theme()
         save_config(self.config)
         self.status.config(text="Settings updated")
@@ -656,6 +778,6 @@ class PacketSnifferApp:
         try:
             self.stop_capture()
         except Exception as exc:
-            print(f"Shutdown Error: {exc}")
+            log_error(f"Shutdown error: {exc}")
         self.root.destroy()
 

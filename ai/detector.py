@@ -4,6 +4,8 @@ import joblib
 
 import numpy as np
 
+from utils.logger import log_error
+
 
 class ThreatDetector:
 
@@ -17,7 +19,7 @@ class ThreatDetector:
             if os.path.exists(model_path):
                 self.model = joblib.load(model_path)
         except Exception as exc:
-            print(f"[ThreatDetector] Failed to load model: {exc}")
+            log_error(f"Threat detector model could not be loaded: {exc}")
 
     def detect(self, packet):
         """Detect if a packet represents a potential threat.
@@ -41,7 +43,7 @@ class ThreatDetector:
             prediction = self.model.predict(features)
             return prediction[0] == 1
         except Exception as exc:
-            print(f"[ThreatDetector] Detection error: {exc}")
+            log_error(f"Threat detector failed to process a packet: {exc}")
             return False
 
     def is_available(self):

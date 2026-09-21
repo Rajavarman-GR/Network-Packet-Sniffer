@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from core.interfaces import get_network_interfaces
-from utils.config import save_config
+from utils.config import normalize_config, save_config
 
 
 class SettingsDialog(tk.Toplevel):
@@ -71,8 +71,8 @@ class SettingsDialog(tk.Toplevel):
 
     def _save(self):
         try:
-            max_packets = int(self.max_packets_var.get())
-        except ValueError:
+            max_packets = max(1, int(self.max_packets_var.get()))
+        except (TypeError, ValueError):
             max_packets = 10000
 
         self.config.update(
@@ -82,9 +82,10 @@ class SettingsDialog(tk.Toplevel):
                 "default_interface": self.interface_var.get(),
                 "default_protocol": self.protocol_var.get(),
                 "auto_scroll": bool(self.auto_scroll_var.get()),
-                "timestamp_format": self.timestamp_var.get(),
+                "timestamp_format": self.timestamp_var.get() or "%H:%M:%S",
             }
         )
+        self.config = normalize_config(self.config)
 
         save_config(self.config)
         if self.on_save is not None:

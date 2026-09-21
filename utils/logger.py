@@ -2,11 +2,12 @@ import logging
 import os
 
 
-os.makedirs("logs", exist_ok=True)
+LOG_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs", "sniffer.log"))
+os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
 logging.basicConfig(
 
-    filename="logs/sniffer.log",
+    filename=LOG_PATH,
 
     level=logging.INFO,
 

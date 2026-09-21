@@ -1,5 +1,7 @@
 import scapy.all as scapy
 
+from utils.logger import log_error
+
 
 class PacketSniffer:
 
@@ -10,7 +12,7 @@ class PacketSniffer:
 
     def start(self, interface, callback, filter_expression=None):
         if self.running:
-            return
+            return False
 
         self.filter_expression = filter_expression or ""
         self.sniffer = scapy.AsyncSniffer(
@@ -20,8 +22,14 @@ class PacketSniffer:
             filter=self.filter_expression
         )
 
-        self.sniffer.start()
+        try:
+            self.sniffer.start()
+        except Exception:
+            self.sniffer = None
+            self.filter_expression = None
+            raise
         self.running = True
+        return True
 
     def stop(self):
         """Stop packet capture safely."""
@@ -29,10 +37,10 @@ class PacketSniffer:
             return
 
         try:
-            if self.sniffer is not None:
+            if self.sniffer is not None and getattr(self.sniffer, "running", True):
                 self.sniffer.stop()
         except Exception as exc:
-            print(f"[Sniffer] Stop Error: {exc}")
+            log_error(f"Capture stop error: {exc}")
         finally:
             self.sniffer = None
             self.running = False
