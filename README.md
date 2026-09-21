@@ -4,7 +4,6 @@ A Python desktop network packet analyzer built with **Scapy** and **Tkinter** fo
 
 The project is designed as an **educational and cybersecurity analysis tool**. It is not intended to replace Wireshark, an IDS/IPS, or a production SOC platform.
 
----
 
 ## ✨ Features
 
