@@ -23,6 +23,13 @@ class PacketManager:
 			return None
 		return next((record for record in self._packets if record["id"] == packet_id), None)
 
+	def update(self, packet_id, values):
+		record = self.get(packet_id)
+		if record is None:
+			return None
+		record.update(values)
+		return record
+
 	def records(self):
 		return list(self._packets)
 

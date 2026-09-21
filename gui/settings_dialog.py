@@ -1,5 +1,6 @@
 import tkinter as tk
-from tkinter import ttk
+import time
+from tkinter import messagebox, ttk
 
 from core.interfaces import get_network_interfaces
 from utils.config import normalize_config, save_config
@@ -11,6 +12,7 @@ class SettingsDialog(tk.Toplevel):
         self.title("Settings")
         self.transient(parent)
         self.grab_set()
+        self.bind("<Escape>", lambda event: self.destroy())
 
         self.config = dict(config)
         self.on_save = on_save
@@ -71,9 +73,20 @@ class SettingsDialog(tk.Toplevel):
 
     def _save(self):
         try:
-            max_packets = max(1, int(self.max_packets_var.get()))
+            max_packets = int(self.max_packets_var.get())
         except (TypeError, ValueError):
-            max_packets = 10000
+            messagebox.showerror("Invalid settings", "Maximum packets must be a whole number of at least 1.", parent=self)
+            return
+        if max_packets < 1:
+            messagebox.showerror("Invalid settings", "Maximum packets must be at least 1.", parent=self)
+            return
+
+        timestamp_format = self.timestamp_var.get().strip() or "%H:%M:%S"
+        try:
+            time.strftime(timestamp_format)
+        except (TypeError, ValueError):
+            messagebox.showerror("Invalid settings", "Timestamp format is not valid.", parent=self)
+            return
 
         self.config.update(
             {
@@ -82,7 +95,7 @@ class SettingsDialog(tk.Toplevel):
                 "default_interface": self.interface_var.get(),
                 "default_protocol": self.protocol_var.get(),
                 "auto_scroll": bool(self.auto_scroll_var.get()),
-                "timestamp_format": self.timestamp_var.get() or "%H:%M:%S",
+                "timestamp_format": timestamp_format,
             }
         )
         self.config = normalize_config(self.config)

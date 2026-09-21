@@ -2,3 +2,4 @@ scapy
 psutil
 numpy
 joblib
+scikit-learn
