@@ -8,11 +8,16 @@ import json
 import os
 from pathlib import Path
 import platform
+import sys
 import uuid
 
 import joblib
 import numpy as np
 import sklearn
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from training.prepare_unsw import validate_unsw_dataset
 from training.unsw_model_pipeline import (
@@ -22,7 +27,6 @@ from training.unsw_model_pipeline import (
 )
 from training.unsw_flow_schema import TARGET_ATTACK_CATEGORY, TARGET_LABEL
 
-ROOT = Path(__file__).resolve().parents[1]
 MODEL_ROOT = ROOT / "ai" / "model"
 FLOW_MODEL_ROOT = MODEL_ROOT / "unsw_flow"
 PACKET_MODEL_PATH = MODEL_ROOT / "threat_model.joblib"

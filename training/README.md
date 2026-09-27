@@ -68,11 +68,58 @@ python training/train_unsw_flow.py --target attack_cat
 python training/evaluate_unsw_flow.py --artifact ai/model/unsw_flow/binary/unsw_flow_pipeline.joblib
 ```
 
-The dataset paths default to the local `D:\Datasets\UNSW-NB15` files and can be
-overridden with `--train`, `--test`, or the `UNSW_NB15_DIR` environment variable.
-Evaluation validates the artifact metadata and source-file hashes, then reports
-metrics from the held-out testing split without refitting preprocessing or the
-classifier.
+The CLI accepts explicit `--train` and `--test` paths; `UNSW_NB15_DIR` can also
+select the directory containing the standard split filenames. Evaluation
+validates artifact metadata and source-file hashes, then reports metrics from
+the held-out testing split without refitting preprocessing or the classifier.
+
+### Recorded Binary Run
+
+A real binary UNSW flow model was trained once with target `label`, 42 validated
+UNSW flow predictors, and the official train/test split preserved. Preprocessing
+was fitted on the training split only. The artifact is intentionally excluded
+from normal Git because its size is approximately 468 MB; the training and
+evaluation code remains versioned. The binary does not represent or measure the
+packet-level live detector.
+
+Reproduce the run from a clean checkout with the official CSV paths available:
+
+```bash
+python training/train_unsw_flow.py --target label --train path/to/UNSW_NB15_training-set.csv --test path/to/UNSW_NB15_testing-set.csv
+python training/evaluate_unsw_flow.py --artifact ai/model/unsw_flow/binary/unsw_flow_pipeline.joblib --train path/to/UNSW_NB15_training-set.csv --test path/to/UNSW_NB15_testing-set.csv
+```
+
+Training refuses to overwrite existing artifacts. Evaluation uses the official
+test split and does not refit. The following manifest identifies the recorded
+local run; it is provenance, not a production-performance claim.
+
+| Item | Recorded value |
+|---|---|
+| Model family / target | `unsw_flow` / `label` |
+| Schema version | `1.0` |
+| Artifact | `ai/model/unsw_flow/binary/unsw_flow_pipeline.joblib` |
+| Artifact size | 468,491,866 bytes |
+| Artifact SHA-256 | `45b0ffba67c16010023fb1124dbc5e230d1b2d62bef2f876a7300c099836ace1` |
+| Train / test rows | 175,341 / 82,332 |
+| Random seed | `42` |
+| Classifier | Random forest, 400 trees, balanced class weights, `n_jobs=-1` |
+| Train CSV SHA-256 | `bec7dd5ec88dc2a0ccc7a07879d338395ed7421750f675fd0339e07dfe0648fa` |
+| Test CSV SHA-256 | `734fe6642edf758f7c94d7d9149426b49d202fe8e7bf0bef47392489c3c0a559` |
+| Python / scikit-learn | `3.14.4` / `1.9.1` |
+
+Recorded held-out results for this dataset split:
+
+| Metric | Value |
+|---|---:|
+| Precision (positive class `1`) | 0.850321042715983 |
+| Recall (positive class `1`) | 0.9757345804288361 |
+| F1 (positive class `1`) | 0.9087211093990755 |
+| ROC-AUC | 0.9812888017175387 |
+| Confusion matrix (actual rows `0, 1`; predicted columns `0, 1`) | `[[29214, 7786], [1100, 44232]]` |
+
+These results describe only this held-out UNSW-NB15 split. They do not establish
+production readiness, generalization to other traffic, or performance of the
+live packet detector.
 
 ## Train
 

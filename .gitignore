@@ -10,6 +10,9 @@ __pycache__/
 
 *.json
 
+# Generated UNSW flow model binaries are local artifacts, not Git source files.
+ai/model/unsw_flow/**/*.joblib
+
 venv/
 .venv/
 
