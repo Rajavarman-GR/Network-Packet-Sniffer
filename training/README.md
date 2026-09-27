@@ -47,6 +47,33 @@ for features, label in data.iter_train():
 	...
 ```
 
+## UNSW-NB15 Training and Evaluation
+
+`training/train_unsw_flow.py` trains the separate UNSW flow model; it does not
+train the packet-level detector. Select one target per model: `label` for binary
+classification or `attack_cat` for attack-category classification. The official
+train/test split is preserved, and the pipeline fits scaling and categorical
+encoding only on training predictors.
+
+Training creates a single fitted pipeline artifact with preprocessing and
+classifier together, plus a metadata JSON file. The default artifact directories
+are `ai/model/unsw_flow/binary/` and
+`ai/model/unsw_flow/attack_category/`. Existing artifacts are not overwritten.
+These files are separate from `ai/model/threat_model.joblib` and are not consumed
+by the live packet detector.
+
+```bash
+python training/train_unsw_flow.py --target label
+python training/train_unsw_flow.py --target attack_cat
+python training/evaluate_unsw_flow.py --artifact ai/model/unsw_flow/binary/unsw_flow_pipeline.joblib
+```
+
+The dataset paths default to the local `D:\Datasets\UNSW-NB15` files and can be
+overridden with `--train`, `--test`, or the `UNSW_NB15_DIR` environment variable.
+Evaluation validates the artifact metadata and source-file hashes, then reports
+metrics from the held-out testing split without refitting preprocessing or the
+classifier.
+
 ## Train
 
 ```bash
