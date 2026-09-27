@@ -32,6 +32,11 @@ alternative target. `id` is excluded from predictors. When `label` is the target
 `attack_cat` is also excluded from predictors; neither target is ever returned
 as a predictor.
 
+`training/unsw_model_pipeline.py` builds unfitted binary and attack-category
+scikit-learn pipelines using this schema. Building a pipeline does not train it,
+fit preprocessing, or create model artifacts. This remains separate from the
+packet-level detector.
+
 Example validation call:
 
 ```python
