@@ -9,6 +9,7 @@ import scapy.all as scapy
 from ai.detector import ThreatDetector
 from ai.feature_extractor import extract_features
 from ai.flow_tracker import FlowTracker
+from core.decoder import decode_packet
 from core.filter_engine import build_bpf_filter
 from core.interfaces import get_network_interfaces, resolve_scapy_interface
 from core.packet_manager import PacketManager
@@ -343,8 +344,21 @@ class PacketSnifferApp:
         table_frame.grid_columnconfigure(0, weight=1)
 
     def create_packet_details(self):
-        title = tk.Label(self.right_panel, text="Packet Details", bg=PANEL_BG, fg="white", font=("Segoe UI", 12, "bold"))
-        title.pack(anchor="w", padx=15, pady=(15, 5))
+        title_row = tk.Frame(self.right_panel, bg=PANEL_BG)
+        title_row.pack(fill="x", padx=15, pady=(15, 5))
+
+        title = tk.Label(title_row, text="Packet Details", bg=PANEL_BG, fg="white", font=("Segoe UI", 12, "bold"))
+        title.pack(side="left")
+
+        tk.Button(
+            title_row,
+            text="Decode Packet",
+            command=self.open_packet_decoder,
+            bg=PRIMARY,
+            fg="white",
+            relief="flat",
+            font=("Segoe UI", 9),
+        ).pack(side="right")
 
         details_frame = tk.Frame(self.right_panel, bg=PANEL_BG)
         details_frame.pack(fill="both", expand=True, padx=15)
@@ -836,6 +850,127 @@ class PacketSnifferApp:
     @staticmethod
     def _format_value(value):
         return "Unavailable" if value is None else str(value)
+
+    # --------------------------------------------------
+
+    def open_packet_decoder(self):
+        """Open a structured, layer-by-layer decode of the currently
+        selected packet: every field of every protocol layer, a
+        best-effort application-layer decode (HTTP / TLS SNI), and any
+        payload security findings (cleartext credentials, embedded
+        files, ...). This is deliberately a separate dialog from the
+        flat Packet Details text pane - it is meant for close reading
+        of one packet, not for scanning statistics."""
+
+        selected = self.packet_table.selection()
+
+        if not selected:
+            messagebox.showinfo("Decode Packet", "Select a packet in the table first.")
+            return
+
+        row = self.packet_manager.get(selected[0])
+
+        if row is None:
+            return
+
+        packet = row["packet"]
+
+        try:
+            decoded = decode_packet(packet)
+        except Exception as exc:
+            log_error(f"Packet decode error: {exc}")
+            messagebox.showerror("Decode Packet", f"Could not decode this packet.\n\n{exc}")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Decode Packet #{row['id']}")
+        dialog.configure(bg=PANEL_BG)
+        dialog.geometry("720x640")
+        dialog.transient(self.root)
+
+        notebook = ttk.Notebook(dialog)
+        notebook.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # ---- Tab 1: layer-by-layer field dissection ----
+
+        layers_frame = tk.Frame(notebook, bg=PANEL_BG)
+        notebook.add(layers_frame, text="Layers")
+
+        tree = ttk.Treeview(layers_frame, columns=("value",), show="tree headings")
+        tree.heading("#0", text="Layer / Field")
+        tree.heading("value", text="Value")
+        tree.column("#0", width=220)
+        tree.column("value", width=440)
+
+        tree_scroll = ttk.Scrollbar(layers_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=tree_scroll.set)
+        tree.pack(side="left", fill="both", expand=True)
+        tree_scroll.pack(side="right", fill="y")
+
+        for layer in decoded["layers"]:
+            layer_node = tree.insert("", "end", text=layer["name"], open=True)
+            for field_name, field_value in layer["fields"]:
+                tree.insert(layer_node, "end", text=field_name, values=(field_value,))
+
+        # ---- Tab 2: application-layer decode (HTTP / TLS) ----
+
+        app_frame = tk.Frame(notebook, bg=PANEL_BG)
+        notebook.add(app_frame, text="Application Layer")
+
+        app_text = tk.Text(app_frame, bg=TABLE_BG, fg="white", wrap="word", relief="flat")
+        app_text.pack(fill="both", expand=True, padx=10, pady=10)
+
+        application = decoded["application"]
+
+        if application is None:
+            app_text.insert(
+                "end",
+                "No recognized application-layer protocol (HTTP/TLS) was found in this "
+                "packet's payload. It may be a different protocol, encrypted application "
+                "data, or a packet with no payload."
+            )
+        elif application["protocol"] == "HTTP":
+            app_text.insert("end", f"HTTP {application['kind'].upper()}\n")
+            app_text.insert("end", f"{application['start_line']}\n\n")
+            app_text.insert("end", "Headers:\n")
+            for key, value in application["headers"].items():
+                app_text.insert("end", f"  {key}: {value}\n")
+            if application["body_preview"]:
+                app_text.insert("end", f"\nBody preview:\n{application['body_preview']}\n")
+                if application["body_truncated"]:
+                    app_text.insert("end", "[body truncated]\n")
+        elif application["protocol"] == "TLS":
+            app_text.insert("end", "TLS Record\n\n")
+            app_text.insert("end", f"Content Type : {application['content_type']}\n")
+            app_text.insert("end", f"Version      : {application['version']}\n")
+            if "handshake_type" in application:
+                app_text.insert("end", f"Handshake    : {application['handshake_type']}\n")
+            if "server_name" in application:
+                app_text.insert("end", f"Server Name (SNI) : {application['server_name']}\n")
+
+        app_text.configure(state="disabled")
+
+        # ---- Tab 3: payload security findings ----
+
+        security_frame = tk.Frame(notebook, bg=PANEL_BG)
+        notebook.add(security_frame, text="Security Findings")
+
+        findings = decoded["security_findings"]
+
+        if not findings:
+            tk.Label(
+                security_frame,
+                text="No cleartext-credential or embedded-file patterns were detected in this payload.",
+                bg=PANEL_BG, fg="#A0A0A0", wraplength=650, justify="left",
+            ).pack(anchor="w", padx=15, pady=15)
+        else:
+            for finding in findings:
+                tk.Label(
+                    security_frame,
+                    text=f"\u26a0 {finding}",
+                    bg=PANEL_BG, fg=ERROR, wraplength=650, justify="left", anchor="w",
+                    font=("Segoe UI", 10, "bold"),
+                ).pack(anchor="w", padx=15, pady=(10, 2))
 
     def search_packets(self):
         self.apply_display_filter()
