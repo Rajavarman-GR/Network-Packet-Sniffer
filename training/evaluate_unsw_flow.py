@@ -10,8 +10,10 @@ import sys
 import joblib
 import numpy as np
 from sklearn.metrics import (
+    accuracy_score,
     confusion_matrix,
     precision_recall_fscore_support,
+    roc_curve,
     roc_auc_score,
 )
 from sklearn.pipeline import Pipeline
@@ -35,6 +37,8 @@ from training.unsw_model_pipeline import (
     build_unsw_model_metadata,
 )
 from training.unsw_flow_schema import TARGET_ATTACK_CATEGORY, TARGET_LABEL
+from training.research import feature_importance, experiment_metadata, summarize_dataset
+from training.research import render_report
 
 
 def build_argument_parser():
@@ -52,6 +56,7 @@ def build_argument_parser():
         type=Path,
         default=DEFAULT_DATASET_ROOT / "UNSW_NB15_testing-set.csv",
     )
+    parser.add_argument("--format", choices=("json", "text"), default="json", help="Report output format.")
     return parser
 
 
@@ -95,6 +100,17 @@ def evaluate_unsw_flow(artifact_path, train_path, test_path, metadata_path=None)
         predictions,
         metadata["class_names"],
     )
+    report["evaluation_context"] = "independent_test_set"
+    report["experiment"] = experiment_metadata(
+        "UNSW-NB15", metadata["source_files"]["test"]["sha256"], target,
+        metadata.get("model_version"),
+        type(pipeline.named_steps["classifier"]).__name__,
+        metadata["classifier_parameters"], metadata["random_seed"],
+        "independent_test_set",
+    )
+    report["feature_importance"] = feature_importance(pipeline)
+    report["dataset_summary"] = summarize_dataset(test_path, test_counts,
+        source_sha256=metadata["source_files"]["test"]["sha256"])
     return report
 
 
@@ -233,6 +249,8 @@ def _build_report(pipeline, features, target, truth, predictions, class_names):
     report = {
         "target": target,
         "sample_count": int(len(truth)),
+        "class_names": list(class_names),
+        "accuracy": float(accuracy_score(truth, predictions)),
         "class_support": class_support,
         "confusion_matrix": confusion_matrix(truth, predictions, labels=class_names).tolist(),
     }
@@ -252,6 +270,17 @@ def _build_report(pipeline, features, target, truth, predictions, class_names):
             "recall": float(recall),
             "f1": float(f1),
             "support": int(class_support["1"]),
+            "per_class": {
+                str(name): {
+                    "precision": float(item[0]), "recall": float(item[1]),
+                    "f1": float(item[2]), "support": int(item[3]),
+                }
+                for name, item in zip(class_names, zip(*precision_recall_fscore_support(
+                    truth, predictions, labels=class_names, average=None, zero_division=0
+                )))
+            },
+            "macro_average": _average_metrics(truth, predictions, class_names, "macro"),
+            "weighted_average": _average_metrics(truth, predictions, class_names, "weighted"),
         })
     else:
         precision, recall, f1, support = precision_recall_fscore_support(
@@ -280,6 +309,9 @@ def _build_report(pipeline, features, target, truth, predictions, class_names):
     roc_auc = _maybe_roc_auc(pipeline, features, truth, target, class_names)
     if roc_auc is not None:
         report["roc_auc"] = roc_auc
+    curve_data = _roc_curve_data(pipeline, features, truth, target, class_names)
+    if curve_data is not None:
+        report["roc_curve"] = curve_data
     return report
 
 
@@ -343,6 +375,43 @@ def _maybe_roc_auc(pipeline, features, truth, target, class_names):
     return None
 
 
+def _roc_curve_data(pipeline, features, truth, target, class_names):
+    if len(set(truth.tolist())) < len(class_names):
+        return None
+    predict_proba = getattr(pipeline, "predict_proba", None)
+    if not callable(predict_proba):
+        return None
+    try:
+        model_classes = list(pipeline.classes_)
+        scores = np.asarray(predict_proba(features))
+    except (AttributeError, ValueError, TypeError):
+        return None
+    if scores.ndim != 2 or scores.shape[1] != len(model_classes):
+        return None
+    if target == TARGET_LABEL:
+        try:
+            column = model_classes.index(1)
+        except ValueError:
+            return None
+        fpr, tpr, thresholds = roc_curve(truth, scores[:, column], pos_label=1)
+        return {"average": "binary", "positive_class": 1,
+                "false_positive_rate": fpr.tolist(), "true_positive_rate": tpr.tolist(),
+                "thresholds": thresholds.tolist()}
+    curves = {}
+    for name in class_names:
+        try:
+            column = model_classes.index(name)
+        except ValueError:
+            return None
+        binary_truth = np.asarray([1 if value == name else 0 for value in truth])
+        if len(set(binary_truth.tolist())) < 2:
+            return None
+        fpr, tpr, thresholds = roc_curve(binary_truth, scores[:, column], pos_label=1)
+        curves[str(name)] = {"false_positive_rate": fpr.tolist(),
+            "true_positive_rate": tpr.tolist(), "thresholds": thresholds.tolist()}
+    return {"average": "one_vs_rest", "per_class": curves}
+
+
 def main(argv=None):
     args = build_argument_parser().parse_args(argv)
     report = evaluate_unsw_flow(
@@ -351,7 +420,7 @@ def main(argv=None):
         args.test,
         metadata_path=args.metadata,
     )
-    print(json.dumps(report, indent=2))
+    print(render_report(report) if args.format == "text" else json.dumps(report, indent=2))
 
 
 if __name__ == "__main__":

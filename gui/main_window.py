@@ -11,8 +11,10 @@ from ai.feature_extractor import extract_features
 from ai.flow_tracker import FlowTracker
 from core.decoder import decode_packet
 from core.filter_engine import build_bpf_filter
+from core.investigation import InvestigationEngine
 from core.interfaces import get_network_interfaces, resolve_scapy_interface
 from core.packet_manager import PacketManager
+from core.pcap import iter_pcap_batches
 from core.parser import get_packet_metadata, get_payload_preview, matches_display_filter
 from core.sniffer import PacketSniffer
 from gui.settings_dialog import SettingsDialog
@@ -68,7 +70,12 @@ class PacketSnifferApp:
         self.packet_queue = queue.Queue(maxsize=1000)
         self.drain_after_id = None
         self.health_after_id = None
-        self.io_queue = queue.Queue()
+        self.io_queue = queue.Queue(maxsize=8)
+        self.pcap_cancel_event = threading.Event()
+        self.pcap_loading = False
+        self.investigation_engine = InvestigationEngine(self._configured_max_packets())
+        self.investigation_data = None
+        self.investigation_busy = False
         self.io_poll_after_id = None
         self.io_busy = False
         self.current_sort_col = None
@@ -256,16 +263,144 @@ class PacketSnifferApp:
         self.body = tk.Frame(self.root, bg=DARK_BG)
         self.body.pack(fill="both", expand=True, padx=10, pady=10)
 
-        self.left_panel = tk.Frame(self.body, bg=PANEL_BG)
+        self.workspace = ttk.Notebook(self.body)
+        self.workspace.pack(fill="both", expand=True)
+        self.packet_view = tk.Frame(self.workspace, bg=PANEL_BG)
+        self.flows_view = tk.Frame(self.workspace, bg=PANEL_BG)
+        self.investigation_view = tk.Frame(self.workspace, bg=PANEL_BG)
+        self.analysis_stats_view = tk.Frame(self.workspace, bg=PANEL_BG)
+        self.workspace.add(self.packet_view, text="Packets")
+        self.workspace.add(self.flows_view, text="Flows")
+        self.workspace.add(self.investigation_view, text="Investigation")
+        self.workspace.add(self.analysis_stats_view, text="Statistics")
+
+        self.left_panel = tk.Frame(self.packet_view, bg=PANEL_BG)
         self.left_panel.pack(side="left", fill="both", expand=True)
 
-        self.right_panel = tk.Frame(self.body, bg=PANEL_BG, width=320)
+        self.right_panel = tk.Frame(self.packet_view, bg=PANEL_BG, width=320)
         self.right_panel.pack(side="right", fill="y", padx=(10, 0))
         self.right_panel.pack_propagate(False)
 
         self.create_packet_table()
         self.create_packet_details()
         self.create_statistics()
+        self.create_investigation_views()
+
+    def create_investigation_views(self):
+        flow_columns = ("Source", "Destination", "Src Port", "Dst Port", "Protocol", "Packets", "Bytes", "Duration")
+        self.flow_table = ttk.Treeview(self.flows_view, columns=flow_columns, show="headings")
+        for column, width in zip(flow_columns, (190, 190, 80, 80, 85, 80, 100, 95)):
+            self.flow_table.heading(column, text=column)
+            self.flow_table.column(column, width=width, anchor="center")
+        self.flow_table.pack(fill="both", expand=True, padx=10, pady=10)
+        self.flow_table.bind("<Double-1>", self._jump_from_flow)
+
+        controls = tk.Frame(self.investigation_view, bg=PANEL_BG)
+        controls.pack(fill="x", padx=10, pady=8)
+        tk.Button(controls, text="Analyze retained packets", command=self.analyze_retained_packets).pack(side="left")
+        self.cancel_pcap_button = tk.Button(controls, text="Cancel PCAP load", command=self.cancel_pcap_load, state="disabled")
+        self.cancel_pcap_button.pack(side="left", padx=(8, 0))
+        tk.Label(controls, text="Analysis uses bounded retained packets; select a row and double-click to open its packet.",
+                 bg=PANEL_BG, fg="#A0A0A0").pack(side="left", padx=10)
+        self.investigation_tree = ttk.Treeview(self.investigation_view,
+            columns=("Category", "Event / evidence", "Packet ID", "Time"), show="headings")
+        for column, width in (("Category", 130), ("Event / evidence", 600), ("Packet ID", 100), ("Time", 150)):
+            self.investigation_tree.heading(column, text=column)
+            self.investigation_tree.column(column, width=width, anchor="w")
+        self.investigation_tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.investigation_tree.bind("<Double-1>", self._jump_from_investigation)
+
+        self.analysis_stats_text = tk.Text(self.analysis_stats_view, bg=TABLE_BG, fg="white", wrap="word", relief="flat")
+        self.analysis_stats_text.pack(fill="both", expand=True, padx=10, pady=10)
+        self._render_investigation_views(None)
+
+    def analyze_retained_packets(self):
+        if self.investigation_busy:
+            return
+        records = self.packet_manager.records()
+        self.investigation_busy = True
+        self.status.config(text="Analyzing retained packets...")
+        threading.Thread(target=self._investigation_worker, args=(records,), daemon=True).start()
+        self._schedule_io_poll()
+
+    def cancel_pcap_load(self):
+        if self.pcap_loading:
+            self.pcap_cancel_event.set()
+            self.status.config(text="Cancelling PCAP load after current packet batch...")
+
+    def _investigation_worker(self, records):
+        try:
+            result = self.investigation_engine.analyze(records)
+            self.io_queue.put(("investigation", "", result, None))
+        except Exception as exc:
+            self.io_queue.put(("investigation", "", None, exc))
+
+    def _render_investigation_views(self, data):
+        for item in self.flow_table.get_children():
+            self.flow_table.delete(item)
+        for item in self.investigation_tree.get_children():
+            self.investigation_tree.delete(item)
+        if data is None:
+            self.analysis_stats_text.delete("1.0", "end")
+            self.analysis_stats_text.insert("end", "No investigation results yet. Analyze retained packets to build flows and evidence.")
+            return
+        self.flow_packet_ids = {}
+        for index, flow in enumerate(data["flows"]):
+            iid = "flow:{}".format(index)
+            self.flow_packet_ids[iid] = flow["packet_ids"]
+            self.flow_table.insert("", "end", iid=iid, values=(flow["source"], flow["destination"], flow["source_port"],
+                flow["destination_port"], flow["protocol"], flow["packet_count"], flow["total_bytes"], "{:.3f}s".format(flow["duration"])))
+        evidence = []
+        for category, records in (("DNS", data["dns"]), ("HTTP", data["http"]), ("TLS", data["tls"]), ("Security", data["findings"])):
+            for record in records:
+                desc = record.get("details", {}).get("message") if category == "Security" else str(record)
+                evidence.append((category, desc, record.get("packet_id"), ""))
+        evidence.extend((event["event_type"], event["description"], event["packet_id"], str(event["timestamp"])) for event in data["timeline"])
+        for index, values in enumerate(evidence):
+            self.investigation_tree.insert("", "end", iid="evidence:{}".format(index), values=values)
+        protocols = {}
+        for record in data["analyses"]:
+            protocol = record["metadata"].get("protocol", "OTHER")
+            protocols[protocol] = protocols.get(protocol, 0) + 1
+        ai_findings = sum(item["source_type"] == "ai" for item in data["findings"])
+        decoder_findings = len(data["findings"]) - ai_findings
+        summary = ["Retained packets: {}".format(data["packet_count"]), "Total bytes: {}".format(data["total_bytes"]),
+            "Conversations: {}".format(len(data["flows"])), "AI findings: {}".format(ai_findings),
+            "Decoder heuristic findings: {}".format(decoder_findings), "", "Protocol distribution:"]
+        summary.extend("  {}: {}".format(name, count) for name, count in sorted(protocols.items()))
+        summary.extend(["", "Top talkers:"])
+        summary.extend("  {}: {} packets / {} bytes".format(item["source"], item["packet_count"], item["byte_count"]) for item in data["top_talkers"][:10])
+        self.analysis_stats_text.delete("1.0", "end")
+        self.analysis_stats_text.insert("end", "\n".join(summary))
+
+    def _jump_to_packet(self, packet_id):
+        if packet_id is None:
+            return
+        iid = str(packet_id)
+        if not self.packet_table.exists(iid) and self.packet_manager.get(iid) is not None:
+            self.search_entry.delete(0, "end")
+            self.display_protocol_var.set("ALL")
+            self.search_keyword = ""
+            self.display_filter = "ALL"
+            self._refresh_packet_table()
+        if self.packet_table.exists(iid):
+            self.workspace.select(self.packet_view)
+            self.packet_table.selection_set(iid)
+            self.packet_table.focus(iid)
+            self.packet_table.see(iid)
+            self.show_packet_details(None)
+
+    def _jump_from_investigation(self, event=None):
+        selected = self.investigation_tree.selection()
+        if selected:
+            self._jump_to_packet(self.investigation_tree.set(selected[0], "Packet ID"))
+
+    def _jump_from_flow(self, event=None):
+        selected = self.flow_table.selection()
+        if selected:
+            packet_ids = getattr(self, "flow_packet_ids", {}).get(selected[0], [])
+            if packet_ids:
+                self._jump_to_packet(packet_ids[0])
 
     def create_packet_table(self):
         title = tk.Label(self.left_panel, text="Captured Packets", bg=PANEL_BG, fg="white", font=("Segoe UI", 12, "bold"))
@@ -1058,25 +1193,56 @@ class PacketSnifferApp:
         try:
             operation, filepath, value, error = self.io_queue.get_nowait()
         except queue.Empty:
-            if self.io_busy:
+            if self.io_busy or self.investigation_busy:
                 self._schedule_io_poll()
+            return
+
+        if operation == "load_start":
+            self.pcap_loading = True
+            self.new_capture()
+            self.pcap_cancel_event.clear()
+            self.cancel_pcap_button.config(state="normal")
+            self.status.config(text="Loading PCAP: 0 packets processed (cancel in Investigation)")
+            self._schedule_io_poll()
+            return
+        if operation == "load_batch":
+            for packet in value:
+                self._process_packet(packet, refresh=False)
+            self.status.config(text="Loading PCAP: {:,} packets processed (cancel in Investigation)".format(self.packet_count))
+            self._schedule_io_poll()
+            return
+        if operation == "load_done":
+            self.io_busy = False
+            self.pcap_loading = False
+            self.cancel_pcap_button.config(state="disabled")
+            self._refresh_packet_table()
+            self._update_statistics()
+            suffix = " (cancelled)" if self.pcap_cancel_event.is_set() else ""
+            self.status.config(text="Loaded {:,} packets{} | Displayed {:,}".format(self.packet_count, suffix, len(self._visible_records())))
+            self.analyze_retained_packets()
+            return
+        if operation == "investigation":
+            self.investigation_busy = False
+            if error is not None:
+                self.status.config(text="Investigation failed")
+                messagebox.showerror("Investigation", "Could not analyze retained packets.\n\n{}".format(error))
+            else:
+                self.investigation_data = value
+                self._render_investigation_views(value)
+                self.status.config(text="Investigation ready: {:,} retained packets".format(value["packet_count"]))
             return
 
         self.io_busy = False
         if error is not None:
+            if operation == "load":
+                self.pcap_loading = False
+                self.cancel_pcap_button.config(state="disabled")
             title = "Open PCAP" if operation == "load" else "Export Error"
             messagebox.showerror(title, f"Could not process capture.\n\n{error}")
             self.status.config(text="Ready")
             return
 
-        if operation == "load":
-            self.new_capture()
-            for packet in value:
-                self._process_packet(packet, refresh=False)
-            self._refresh_packet_table()
-            self._update_statistics()
-            self.status.config(text=f"Loaded {len(value):,} packets | Displayed {len(self._visible_records()):,}")
-        else:
+        if operation == "export":
             messagebox.showinfo("Export", f"Exported {value:,} packets from the current display view to {filepath}")
             self.status.config(text="Ready")
 
@@ -1107,6 +1273,9 @@ class PacketSnifferApp:
         self.bandwidth_bytes = 0
         self.bandwidth_start_time = None
         self.packet_manager.clear()
+        self.investigation_engine.max_records = self.max_packets
+        self.investigation_data = None
+        self._render_investigation_views(None)
         self.flow_tracker.clear()
         while not self.ai_queue.empty():
             try:
@@ -1132,16 +1301,23 @@ class PacketSnifferApp:
             return
 
         self.io_busy = True
+        self.pcap_loading = True
+        self.cancel_pcap_button.config(state="normal")
+        self.pcap_cancel_event.clear()
         self.status.config(text="Loading PCAP...")
         threading.Thread(target=self._load_pcap_worker, args=(filepath,), daemon=True).start()
         self._schedule_io_poll()
 
     def _load_pcap_worker(self, filepath):
         try:
-            result = ("load", filepath, scapy.rdpcap(filepath), None)
+            self.io_queue.put(("load_start", filepath, None, None))
+            count = 0
+            for batch in iter_pcap_batches(filepath, cancel_event=self.pcap_cancel_event):
+                self.io_queue.put(("load_batch", filepath, batch, None))
+                count += len(batch)
+            self.io_queue.put(("load_done", filepath, count, None))
         except Exception as exc:
-            result = ("load", filepath, None, exc)
-        self.io_queue.put(result)
+            self.io_queue.put(("load", filepath, None, exc))
 
     def open_settings(self):
         SettingsDialog(self.root, self.config, self._apply_settings)
@@ -1152,6 +1328,7 @@ class PacketSnifferApp:
         self.protocol_var.set(config.get("default_protocol", self.protocol_var.get()))
         self.max_packets = self._configured_max_packets()
         self.packet_manager.set_max_packets(self.max_packets)
+        self.investigation_engine.max_records = self.max_packets
         self.packet_rows = self.packet_manager.records()
         self._refresh_packet_table()
         self._update_statistics()
