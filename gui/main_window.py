@@ -941,12 +941,47 @@ class PacketSnifferApp:
                     app_text.insert("end", "[body truncated]\n")
         elif application["protocol"] == "TLS":
             app_text.insert("end", "TLS Record\n\n")
-            app_text.insert("end", f"Content Type : {application['content_type']}\n")
-            app_text.insert("end", f"Version      : {application['version']}\n")
+            app_text.insert("end", f"Content Type : {application.get('content_type', 'Unknown')}\n")
+            app_text.insert("end", f"Version      : {application.get('version', 'Unknown')}\n")
             if "handshake_type" in application:
                 app_text.insert("end", f"Handshake    : {application['handshake_type']}\n")
             if "server_name" in application:
                 app_text.insert("end", f"Server Name (SNI) : {application['server_name']}\n")
+            if application.get("record_truncated") or application.get("handshake_truncated"):
+                app_text.insert("end", "Record/handshake is truncated in this packet.\n")
+            if application.get("content_type") == "ApplicationData":
+                app_text.insert("end", "TLS application data is encrypted; this decoder does not decrypt it.\n")
+        elif application["protocol"] == "DNS":
+            app_text.insert("end", "DNS {}\n".format(application["kind"].upper()))
+            app_text.insert("end", "Transaction ID: {}\n".format(application["transaction_id"]))
+            app_text.insert("end", "NXDOMAIN: {}\n".format(application["nxdomain"]))
+            for question in application["questions"]:
+                app_text.insert("end", "Question: {} ({})\n".format(question["name"], question["type"]))
+            for answer in application["answers"]:
+                app_text.insert("end", "Answer: {} {} {}\n".format(answer["name"], answer["type"], answer["data"]))
+        elif application["protocol"] == "FTP":
+            app_text.insert("end", "FTP {}\n".format(application["kind"].title()))
+            if application["kind"] == "command":
+                app_text.insert("end", "Command: {}\nArgument: {}\n".format(application["command"], application["argument"]))
+            else:
+                app_text.insert("end", "Response: {} {}\n".format(application["code"], application["message"]))
+        elif application["protocol"] in {"ICMP", "ICMPv6"}:
+            app_text.insert("end", "{}: {}\nType: {} ({})\nCode: {}\n".format(
+                application["protocol"], application.get("type_name", "Message"),
+                application.get("type", ""), application.get("type_name", "Unknown"),
+                application.get("code", ""),
+            ))
+            if "identifier" in application:
+                app_text.insert("end", "Identifier: {}\nSequence: {}\n".format(application["identifier"], application["sequence"]))
+
+        payload_view = decoded["payload"]
+        if payload_view["present"]:
+            app_text.insert("end", "\nPayload preview ({} bytes{}):\n".format(
+                payload_view["length"], ", truncated" if payload_view["truncated"] else "",
+            ))
+            app_text.insert("end", "ASCII: {}\nHex: {}\n".format(payload_view["ascii"], payload_view["hex"]))
+        elif application is None:
+            app_text.insert("end", "\nNo payload is available for packet-level decoding.")
 
         app_text.configure(state="disabled")
 
@@ -954,6 +989,12 @@ class PacketSnifferApp:
 
         security_frame = tk.Frame(notebook, bg=PANEL_BG)
         notebook.add(security_frame, text="Security Findings")
+
+        tk.Label(
+            security_frame,
+            text="Heuristic indicators only. Findings are not malware verdicts, attack confirmation, or AI predictions.",
+            bg=PANEL_BG, fg="#A0A0A0", wraplength=650, justify="left",
+        ).pack(anchor="w", padx=15, pady=(15, 5))
 
         findings = decoded["security_findings"]
 
