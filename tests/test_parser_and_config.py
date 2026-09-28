@@ -166,6 +166,12 @@ class ParserAndConfigTests(unittest.TestCase):
         next_record, _ = manager.add("four", {})
         self.assertGreater(next_record["id"], third["id"])
 
+    def test_packet_manager_clamps_directly_configured_retention(self):
+        manager = PacketManager(max_packets=10**12)
+        self.assertEqual(manager.max_packets, 20000)
+        manager.set_max_packets(10**12)
+        self.assertEqual(manager.max_packets, 20000)
+
     def test_parser_returns_safe_metadata_for_malformed_packet_values(self):
         self.assertEqual(0, get_packet_metadata(None)["length"])
         metadata = get_packet_metadata(object())

@@ -1,6 +1,15 @@
 # Network Packet Sniffer — Master Project Audit
 
-**Audit basis:** source tree at `1b6699b` (`main`), inspected locally on 2026-09-28. The Git working tree was clean at audit start. This is a code-grounded description; see individual technical documents for deeper details. Git tracks no model binary, dataset, packet capture, or saved investigation case. The local workspace contains an ignored, untracked UNSW binary and metadata; no runtime threat model or dataset CSV is present.
+## Phase 5.1 hardening update (2026-09-28)
+
+The follow-up local hardening pass corrected strict runtime model validation,
+runtime training overwrite protections, UNSW evaluator path defaults, direct
+PacketManager retention limits, investigation cancellation accounting, and GUI
+capture/result polling guards. See `docs/security.md` for trust boundaries and
+`docs/testing.md` for the expanded regression suite. Validation results for
+this pass are recorded after the audit sections below.
+
+**Audit basis:** Phase 5 source review at `1b6699b` (`main`), followed by Phase 5.1 validation from local starting HEAD `44d690b` on 2026-09-28. The starting worktree for Phase 5.1 was clean. Git tracks no model binary, dataset, packet capture, or saved investigation case. The local workspace contains an ignored, untracked UNSW binary and metadata; no runtime threat model or dataset CSV is present.
 
 ## Project in one page
 
@@ -108,7 +117,7 @@ The complete current 23-feature schema, source, type, meaning, bounds, FlowTrack
 - AI input is queued only when a compatible local model loaded. FlowTracker state is updated inside the single AI worker before the packet feature vector is created.
 - The key is directed `(src, dst, sport, dport, protocol)`. Endpoint histories have a 6,000 timestamp cap, context window default 60 seconds, and state expiration default 300 seconds (periodic sweep); there are 10,000 flow/endpoint bounds and 1,000 unique destination/port bounds.
 - Feature order is explicitly built from `FEATURE_NAMES`, schema version `1.0`. Source/context values default to numeric values; extraction errors are converted to unavailable results.
-- Metadata requires the exact schema version and ordered feature names before `joblib.load`; callable `predict` is required. Feature count is compared with 23 when the model exposes `n_features_in_`, but missing count metadata falls back to 23 and therefore passes. No artifact hash is checked.
+- Metadata requires exact schema version and ordered feature names, model name/version, and classes before `joblib.load`; callable `predict`, an explicit 23-feature `n_features_in_`, and exact estimator/metadata class agreement are required. Metadata is size-limited and Windows UNC paths are rejected. No artifact hash is checked.
 - `predict_proba` maximum is called confidence when present. Risk score is a formula based on the normalized label and confidence. Neither is established as calibrated threat likelihood.
 - If the model is absent/incompatible, records show unavailable; absent model files are the current checked-in state.
 
@@ -121,7 +130,7 @@ Serialized joblib models must be treated as trusted artifacts: metadata checks a
 | Input | Packet plus runtime parser and FlowTracker state | One flow row from user-supplied UNSW CSV |
 | Schema | 23 numeric features, runtime schema v1.0 | 42 predictors (39 numeric, `proto`/`service`/`state` categorical), UNSW schema v1.0 |
 | Goal | Optional per-packet classification during live or PCAP GUI work | Offline binary or attack-category flow experiment |
-| Training | `training/train.py`, 100-tree balanced RandomForest + scaler; no split/evaluation safeguards | `train_unsw_flow.py`, schema guard + StandardScaler + OneHotEncoder + 400-tree balanced RandomForest |
+| Training | `training/train.py`, 100-tree balanced RandomForest + scaler; no split/evaluation safeguards, existing outputs require `--force` to replace | `train_unsw_flow.py`, schema guard + StandardScaler + OneHotEncoder + 400-tree balanced RandomForest |
 | Evaluation | Legacy helper reports classification report on supplied feature CSV | Evaluator checks metadata and input file hashes/counts, predicts official test split without fitting |
 | Artifact | `ai/model/threat_model.joblib` + `metadata.json` | Dedicated `ai/model/unsw_flow/{binary,attack_category}/` pipeline + metadata |
 | Checked-in artifact/data | No runtime artifact/data tracked or present | No UNSW artifact/data tracked in Git; ignored local binary + metadata are present, source CSVs absent |
@@ -161,24 +170,26 @@ Recorded values and caveats are in [performance.md](performance.md). In particul
 
 ## Testing and CI
 
-At this audit, the suite contains **134 tests** across 12 modules:
+At the Phase 5.1 update, the suite contains **151 tests** across 14 modules:
 
 | Test module | Count | Primary coverage |
 |---|---:|---|
 | `test_dataset_adapter.py` | 6 | Exact runtime CSV schema, numeric features, labels, malformed datasets. |
 | `test_decoder.py` | 35 | Decoder plugins, protocol fields, malformed/truncated packets, payload bounds and heuristic findings. |
-| `test_investigation.py` | 4 | Conversation/evidence grouping, packet IDs, timeline, cancellation/retention. |
-| `test_parser_and_config.py` | 19 | Metadata, filters, malformed values, FlowTracker bounds/expiry/self-traffic, model compatibility, config. |
+| `test_investigation.py` | 5 | Conversation/evidence grouping, packet IDs, timeline, cancellation/retention accounting. |
+| `test_model_loader.py` | 8 | Strict runtime model/schema/count/classes and metadata bounds. |
+| `test_parser_and_config.py` | 20 | Metadata, filters, malformed values, FlowTracker bounds/expiry/self-traffic, model compatibility, config, PacketManager max cap. |
 | `test_pcap_stream.py` | 4 | Batches, cancellation, invalid capture and resource cleanup. |
 | `test_product_presentation.py` | 12 | Explanations, display models, empty states, themes/config compatibility. |
 | `test_research.py` | 3 | Dataset summaries, feature importance, report helpers. |
 | `test_unsw_audit.py` | 8 | Training-only split/audit, variants and safeguards. |
 | `test_unsw_flow_schema.py` | 15 | UNSW header/row/target validation and streaming contracts. |
 | `test_unsw_model_pipeline.py` | 15 | Unfitted pipeline schema, encoders, metadata and artifact separation. |
-| `test_unsw_training.py` | 11 | Training/evaluation metadata, hashes, non-refit behavior and output safeguards. |
+| `test_training_safety.py` | 4 | Runtime artifact overwrite refusal/force, output path selection and research separation. |
+| `test_unsw_training.py` | 14 | Training/evaluation metadata, hashes, non-refit behavior, output safeguards and path defaults. |
 | `test_worker_queue.py` | 2 | Backpressure and shutdown termination. |
 
-The suite has parser and Decoder malformed/truncation tests, PCAP lifecycle tests, queue concurrency tests and extensive UNSW schema/model/evaluation tests. It does not constitute a live capture-driver test or an end-to-end interactive GUI launch test; GUI support is mostly through pure presentation/theme behavior. CI runs on Ubuntu/Python 3.11. Managed Windows hosts may need a writable Scapy cache/temp directory or offline Scapy test setup, without changing production code or weakening tests.
+The suite has parser and Decoder malformed/truncation tests, PCAP lifecycle tests, queue concurrency tests and extensive UNSW schema/model/evaluation tests. It does not constitute a live capture-driver test or an end-to-end interactive GUI launch test. CI runs on Ubuntu/Python 3.11. Managed Windows hosts may need a writable Scapy cache/temp directory and execution access for Scapy initialization, without changing production code or weakening tests.
 
 ## Security-conscious design and remaining limitations
 
@@ -187,6 +198,8 @@ The suite has parser and Decoder malformed/truncation tests, PCAP lifecycle test
 - Capture callback is nonblocking. Worker queues bound memory and use drops/backpressure according to stage.
 - Shutdown signals workers and bounds joins, but cannot interrupt an OS read or model call already in progress.
 - joblib model deserialization is unsafe for untrusted files. Runtime metadata checks do not prove artifact trust or model validity.
+- Runtime ModelLoader now rejects missing/incorrect feature count and metadata/model class disagreement. Runtime training refuses existing outputs absent explicit `--force`; UNSW evaluation derives both default CSV paths from `UNSW_NB15_DIR`.
+- GUI state guards now ignore duplicate capture requests, stop live capture before starting PCAP load, and keep polling while another worker result remains pending. Automated widget/theme/navigation smoke testing remains unverified.
 - No runtime model/data is bundled. Model output has no checked-in production evaluation or calibration evidence.
 - AI/context queue overflow can skip work; bounded endpoint history affects rate/count semantics.
 - GUI Treeviews are not virtualized; large input files are read incrementally but only a small retained window is kept and rendering work occurs on Tk.
@@ -366,9 +379,9 @@ For an analyst, review traffic/endpoints, group a retained conversation, inspect
 - Investigation is bounded by retained PacketManager records, not unlimited PCAP history.
 - TLS means visible record/ClientHello inspection, not decryption.
 - The ignored local UNSW binary hash matches the recorded manifest, but the source CSVs are absent and the binary was not loaded; metrics remain a recorded local report, not independently rerun evidence.
-- `ModelLoader`'s feature-count fallback accepts a model without `n_features_in_`; schema metadata is the primary exact contract.
-- Legacy `training/train.py` writes into the runtime artifact location and does not guard against overwriting it. Its input reader is less strict than `dataset_adapter.py`; it should be used only with reviewed local training data and trusted outputs.
-- The `evaluate_unsw_flow.py` parser uses `UNSW_NB15_DIR` for its default training path but its default test path is currently hardcoded from `DEFAULT_DATASET_ROOT`; supply both paths when overriding the dataset directory.
+- Runtime ModelLoader requires explicit feature-count and model-class agreement, but does not cryptographically authenticate joblib artifacts; only trusted artifacts should be loaded.
+- `training/train.py` refuses existing outputs unless `--force` is explicit. Its input reader remains less strict than `dataset_adapter.py`, performs no split, and requires reviewed local training data.
+- `evaluate_unsw_flow.py` resolves both default split paths from `UNSW_NB15_DIR`; explicit train/test CLI paths override those defaults. Historical results still cannot be independently rerun without matching source CSV files.
 - Full-window Investigation and GUI Treeviews may be slow on the maximum retained limit; the table does not virtualize rows.
 - `core/capture_engine.py` and several `gui/*` modules are unused placeholders; package tree presence alone is not active feature evidence.
 

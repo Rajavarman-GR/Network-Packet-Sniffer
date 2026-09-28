@@ -13,7 +13,7 @@ The dataset is not downloaded, generated, or committed by this repository. Featu
 
 ### Runtime contract and compatibility
 
-`training/dataset_adapter.py` is a strict adapter that accepts only the runtime schema and rejects anything that does not match it exactly. The legacy `training/train.py` script does **not** call this adapter: its CSV reader checks for required columns and casts features to floats, but performs less validation. Training with that script fits on all provided rows, does not create a train/test split, and writes to the runtime model location without an overwrite guard. Review any dataset and back up trusted local artifacts before using it.
+`training/dataset_adapter.py` is a strict adapter that accepts only the runtime schema and rejects anything that does not match it exactly. The `training/train.py` script does **not** call this adapter: its CSV reader checks for required columns and casts features to floats, but performs less validation. Training with that script fits on all provided rows and does not create a train/test split. It refuses to replace existing model files unless `--force` is explicitly supplied, accepts `--output-dir`, and refuses output under `ai/model/unsw_flow`.
 
 If a public dataset is not already in the same feature semantics, the adapter raises a clear error rather than guessing a mapping. This repository does not contain a real production dataset and therefore does not train a model from a fabricated or synthetic one.
 
@@ -124,9 +124,8 @@ live packet detector.
 The manifest above records a previous local run. The generated binary, metadata
 file, and source CSVs are not present in the current checkout, so this repository
 state cannot independently verify or reproduce those metrics. They are not a
-runtime AI result. When setting `UNSW_NB15_DIR` for evaluation, pass both `--train`
-and `--test`: the current evaluator's default training path uses the environment
-variable, while its default test path still uses the hardcoded default directory.
+runtime AI result. When set, `UNSW_NB15_DIR` now supplies both default split paths;
+explicit `--train` and `--test` arguments override their respective defaults.
 
 ## Train
 
@@ -134,7 +133,7 @@ variable, while its default test path still uses the hardcoded default directory
 python training/train.py path/to/dataset.csv
 ```
 
-This writes `ai/model/threat_model.joblib` and `ai/model/metadata.json`. Treat both files as trusted local artifacts. Serialized joblib files can execute code while loading; do not use unreviewed files.
+This writes `ai/model/threat_model.joblib` and `ai/model/metadata.json` only when neither already exists. To choose a different output directory use `--output-dir path/to/runtime-model`; to replace an existing pair deliberately, pass `--force`. The two destinations are staged before installation. Runtime outputs cannot be written inside `ai/model/unsw_flow/`. Treat both files as trusted local artifacts. Serialized joblib files can execute code while loading; do not use unreviewed files.
 
 ## Evaluate
 

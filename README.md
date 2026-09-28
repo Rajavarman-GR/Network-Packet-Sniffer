@@ -36,6 +36,7 @@ Choose an interface and click **Start**, or open a saved capture with **Open PCA
 - [User guide](docs/user_guide.md) — beginner, PCAP, and analyst workflows.
 - [Investigation](docs/investigation.md) — retained data scope and evidence model.
 - [Performance](docs/performance.md) and [testing](docs/testing.md).
+- [Application security review](docs/security.md) — packet/model trust boundaries, resource limits, and known risks.
 - [UNSW training documentation](training/README.md).
 
 ## Development checks

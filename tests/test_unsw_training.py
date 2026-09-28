@@ -14,6 +14,7 @@ from training.evaluate_unsw_flow import (
     evaluate_unsw_flow,
 )
 from training.train_unsw_flow import (
+    DEFAULT_DATASET_ROOT,
     FLOW_MODEL_ROOT,
     METADATA_FILENAME,
     PACKET_MODEL_PATH,
@@ -100,6 +101,31 @@ class UNSWTrainingTests(unittest.TestCase):
     def test_evaluation_cli_requires_a_specific_artifact(self):
         with self.assertRaises(SystemExit):
             build_evaluation_parser().parse_args([])
+
+    def test_evaluation_environment_directory_sets_both_split_defaults(self):
+        with patch.dict(os.environ, {"UNSW_NB15_DIR": str(self.root)}):
+            args = build_evaluation_parser().parse_args(["--artifact", "model.joblib"])
+
+        self.assertEqual(args.train, self.root / "UNSW_NB15_training-set.csv")
+        self.assertEqual(args.test, self.root / "UNSW_NB15_testing-set.csv")
+
+    def test_evaluation_explicit_split_paths_override_environment(self):
+        train_path = self.root / "custom-train.csv"
+        test_path = self.root / "custom-test.csv"
+        with patch.dict(os.environ, {"UNSW_NB15_DIR": str(self.root / "environment")}):
+            args = build_evaluation_parser().parse_args([
+                "--artifact", "model.joblib", "--train", str(train_path), "--test", str(test_path),
+            ])
+
+        self.assertEqual(args.train, train_path)
+        self.assertEqual(args.test, test_path)
+
+    def test_evaluation_default_split_paths_use_deterministic_default_directory(self):
+        with patch.dict(os.environ, {}, clear=True):
+            args = build_evaluation_parser().parse_args(["--artifact", "model.joblib"])
+
+        self.assertEqual(args.train, DEFAULT_DATASET_ROOT / "UNSW_NB15_training-set.csv")
+        self.assertEqual(args.test, DEFAULT_DATASET_ROOT / "UNSW_NB15_testing-set.csv")
 
     def test_binary_builder_and_metadata_exclude_attack_category(self):
         pipeline = build_binary_pipeline()

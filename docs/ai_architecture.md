@@ -68,11 +68,11 @@ The 6,000 timestamp cap is independent of the 60-second age window. During a bur
 
 1. If either file is missing, set an error and leave `available=False`.
 2. Read JSON metadata; require `feature_schema_version == "1.0"` and exact ordered `features == FEATURE_NAMES`.
-3. Load the joblib object, then require callable `predict`.
-4. Check `n_features_in_` against 23 **when the attribute exists**. The code defaults a missing attribute to 23, so this is not a strict independent check for estimators that omit `n_features_in_`.
-5. Store the object and metadata. Any loading/validation exception is logged and leaves the model unavailable.
+3. Require nonempty `model_name`, `model_version`, and unique string `classes` metadata.
+4. Load the joblib object, then require callable `predict`, a present integral `n_features_in_` equal to 23, and exact agreement between estimator `classes_` and metadata classes.
+5. Store the object and metadata only after all checks pass. Metadata files over 256 KiB and UNC paths on Windows are rejected. Any loading/validation exception is logged and leaves the model unavailable.
 
-The loader does not compare model hash, require a named model/version field, inspect estimator class, or validate probability calibration. Metadata validation occurs before deserialization, but it does not make deserialization safe. `joblib.load` uses pickle-based serialization: load only model files from trusted sources.
+The loader does not compare a cryptographic model hash, inspect estimator class, or validate probability calibration. Metadata validation occurs before deserialization, but it does not make deserialization safe. `joblib.load` uses pickle-based serialization: load only model files from trusted local sources. UNC paths are rejected on Windows; local paths and mapped drives still require the operator to trust their contents.
 
 For each available model prediction, `ThreatDetector` calls `predict([features])[0]`. It then calls `predict_proba([features])` when available and reports the largest class probability as `confidence`; otherwise confidence is `None`. Labels are uppercased and normalize `1/TRUE/THREAT/SUSPICIOUS/MALICIOUS` to `SUSPICIOUS`, `2/HIGH/HIGH_RISK/HIGH RISK` to `HIGH RISK`, and `0/FALSE/BENIGN/NORMAL` to `BENIGN`. Other outputs remain as their uppercased text.
 
@@ -82,7 +82,7 @@ If the model is missing/incompatible, the GUI reports AI unavailable and stores 
 
 ## Runtime classifier training utility
 
-`training/train.py` can fit a `StandardScaler` plus 100-tree balanced `RandomForestClassifier` from a CSV whose columns match the runtime 23-feature names plus `label`. Its reader converts features to float but is less strict than `training/dataset_adapter.py`; it does not use that adapter, perform a train/test split, record a dataset hash, or prevent overwriting the two default artifacts. `training/evaluate.py` loads the model and prints a classification report on a supplied CSV; it does not independently validate metadata or protect against untrusted serialization. These scripts are prototype local utilities, not evidence of a supplied or production-trained runtime model.
+`training/train.py` can fit a `StandardScaler` plus 100-tree balanced `RandomForestClassifier` from a CSV whose columns match the runtime 23-feature names plus `label`. Its reader converts features to float but is less strict than `training/dataset_adapter.py`; it does not use that adapter, perform a train/test split, or record a dataset hash. It refuses to overwrite existing runtime output unless `--force` is explicit, and cannot write into `ai/model/unsw_flow`. `--output-dir` selects a separate destination. `training/evaluate.py` loads the model and prints a classification report on a supplied CSV; it does not independently validate metadata or protect against untrusted serialization. These scripts are prototype local utilities, not evidence of a supplied or production-trained runtime model.
 
 ## Semantics
 

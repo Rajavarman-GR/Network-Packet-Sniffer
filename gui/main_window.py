@@ -260,6 +260,7 @@ class PacketSnifferApp:
             width=12,
             relief="flat",
             font=(FONT_FAMILY, SIZES["font_body"], "bold"),
+            state="disabled",
         )
         self.stop_button.grid(row=0, column=5, padx=5)
 
@@ -843,8 +844,21 @@ class PacketSnifferApp:
                       "analyzing": tokens["warning"], "completed": tokens["accent"], "error": tokens["danger"]}
             badge_text = tokens["background"] if self.config.get("theme", "dark") == "dark" else "#FFFFFF"
             self.capture_state_badge.config(text=state.upper(), bg=colors.get(state, tokens["muted"]), fg=badge_text)
+        self._sync_capture_controls()
+
+    def _sync_capture_controls(self):
+        if not hasattr(self, "start_button"):
+            return
+        capturing = self.sniffer.running
+        blocked = self._closing or self.pcap_loading
+        self.start_button.config(state="disabled" if capturing or blocked else "normal")
+        self.stop_button.config(state="normal" if capturing else "disabled")
+        if hasattr(self, "open_pcap_button"):
+            self.open_pcap_button.config(state="disabled" if blocked else "normal")
 
     def start_capture(self):
+        if self._closing or self.pcap_loading or self.sniffer.running:
+            return
         interface = self.interface_var.get()
         protocol = self.protocol_var.get()
 
@@ -857,13 +871,16 @@ class PacketSnifferApp:
             return
 
         try:
-            self.sniffer.start(
+            started = self.sniffer.start(
                 resolve_scapy_interface(interface),
                 self.packet_callback,
                 filter_expression=build_bpf_filter(protocol),
             )
         except Exception as exc:
             self._show_capture_error(interface, exc)
+            return
+        if not started:
+            self._sync_capture_controls()
             return
 
         self.bandwidth_start_time = time.time()
@@ -1288,8 +1305,8 @@ class PacketSnifferApp:
         try:
             decoded = decode_packet(packet)
         except Exception as exc:
-            log_error(f"Packet decode error: {exc}")
-            messagebox.showerror("Decode Packet", f"Could not decode this packet.\n\n{exc}")
+            log_error("Packet decode failed: {}".format(type(exc).__name__))
+            messagebox.showerror("Decode Packet", "Could not decode this packet ({})".format(type(exc).__name__))
             return
 
         dialog = tk.Toplevel(self.root)
@@ -1533,6 +1550,10 @@ class PacketSnifferApp:
         if self.io_poll_after_id is None and not self._closing:
             self.io_poll_after_id = self.root.after(50, self._poll_io_results)
 
+    def _schedule_io_poll_if_busy(self):
+        if self.io_busy or self.investigation_busy:
+            self._schedule_io_poll()
+
     def _poll_io_results(self):
         if self._closing:
             self.io_poll_after_id = None
@@ -1569,9 +1590,11 @@ class PacketSnifferApp:
             suffix = " (cancelled)" if self.pcap_cancel_event.is_set() else ""
             self._set_operation_state("completed", "loaded {:,} packets{}".format(self.packet_count, suffix))
             self.analyze_retained_packets()
+            self._schedule_io_poll_if_busy()
             return
         if operation == "investigation":
             if filepath != self.investigation_generation:
+                self._schedule_io_poll_if_busy()
                 return
             self.investigation_busy = False
             if error is not None:
@@ -1582,6 +1605,7 @@ class PacketSnifferApp:
                 self.investigation_data = value
                 self._render_investigation_views(value)
                 self._set_operation_state("completed", "analyzed {:,} retained packets".format(value["packet_count"]))
+            self._schedule_io_poll_if_busy()
             return
 
         self.io_busy = False
@@ -1599,11 +1623,13 @@ class PacketSnifferApp:
                 body = "Packet export could not be completed.\n\nCause:\n{}\n\nSuggested action:\nChoose a writable destination and check available disk space.".format(error)
             messagebox.showerror(title, body)
             self._set_operation_state("error", "{} failed".format("PCAP load" if operation == "load" else "export"))
+            self._schedule_io_poll_if_busy()
             return
 
         if operation == "export":
             messagebox.showinfo("Export", f"Exported {value:,} packets from the current display view to {filepath}")
             self.status.config(text="Ready")
+        self._schedule_io_poll_if_busy()
 
     def create_statusbar(self):
         ai_state = "available" if self.threat_detector.is_available() else "unavailable"
@@ -1666,12 +1692,15 @@ class PacketSnifferApp:
         if not filepath:
             return
 
+        if self.sniffer.running:
+            self.stop_capture()
         self.io_busy = True
         self.pcap_loading = True
         self.cancel_pcap_button.config(state="normal")
         self.cancel_load_button.config(state="normal")
         self.pcap_cancel_event.clear()
         self._set_operation_state("loading", "starting PCAP reader")
+        self._sync_capture_controls()
         self._pcap_thread = threading.Thread(target=self._load_pcap_worker, args=(filepath,), daemon=True)
         self._pcap_thread.start()
         self._schedule_io_poll()

@@ -1,11 +1,13 @@
 from collections import deque
 
+from utils.config import MAX_RETAINED_PACKETS
+
 
 class PacketManager:
 	"""Keep a bounded collection of packets with stable identifiers."""
 
 	def __init__(self, max_packets=10000):
-		self.max_packets = max(1, int(max_packets))
+		self.max_packets = min(MAX_RETAINED_PACKETS, max(1, int(max_packets)))
 		self._packets = deque()
 		self._by_id = {}
 		self._next_id = 1
@@ -42,7 +44,7 @@ class PacketManager:
 		self._by_id.clear()
 
 	def set_max_packets(self, max_packets):
-		self.max_packets = max(1, int(max_packets))
+		self.max_packets = min(MAX_RETAINED_PACKETS, max(1, int(max_packets)))
 		while len(self._packets) > self.max_packets:
 			evicted = self._packets.popleft()
 			self._by_id.pop(evicted["id"], None)

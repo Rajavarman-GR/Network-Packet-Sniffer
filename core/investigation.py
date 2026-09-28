@@ -37,6 +37,7 @@ class InvestigationEngine:
         records = deque(records or (), maxlen=self.max_records)
         flows, talkers = {}, defaultdict(lambda: {"packet_count": 0, "byte_count": 0})
         dns, http, tls, findings, timeline, analyses = [], [], [], [], [], []
+        total_bytes = 0
         for index, record in enumerate(records):
             if cancel_event is not None and cancel_event.is_set():
                 break
@@ -50,6 +51,7 @@ class InvestigationEngine:
             sport, dport = str(metadata.get("sport") or ""), str(metadata.get("dport") or "")
             protocol = str(metadata.get("protocol") or "OTHER")
             length = _packet_length(packet, metadata)
+            total_bytes += length
             ts = _time_value(packet, metadata)
             if src:
                 talkers[src]["packet_count"] += 1
@@ -111,7 +113,7 @@ class InvestigationEngine:
         return {"analyses": analyses, "flows": sorted(flows.values(), key=lambda f: (f["protocol"], f["source"], f["destination"], f["source_port"], f["destination_port"])),
             "top_talkers": [{"source": host, **values} for host, values in sorted(talkers.items(), key=lambda x: (-x[1]["byte_count"], x[0]))],
             "dns": dns, "http": http, "tls": tls, "findings": findings, "timeline": timeline,
-            "packet_count": len(records), "total_bytes": sum(_packet_length(r.get("packet"), r) for r in records)}
+            "packet_count": len(analyses), "total_bytes": total_bytes}
 
 
 def _event(timestamp, event_type, packet_id, description, context):

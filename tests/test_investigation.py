@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock
 
 from scapy.all import DNS, DNSQR, Ether, IP, Raw, TCP, UDP
 
@@ -67,6 +68,20 @@ class InvestigationEngineTests(unittest.TestCase):
         finding = next(item for item in result["findings"] if item["source_type"] == "decoder_heuristic")
         self.assertEqual(44, finding["packet_id"])
         self.assertIn("FTP", finding["details"]["message"])
+
+    def test_cancelled_investigation_reports_only_processed_records_and_bytes(self):
+        records = [
+            {"id": 1, "packet": IP() / UDP() / Raw(load=b"one"), "length": 31},
+            {"id": 2, "packet": IP() / UDP() / Raw(load=b"two"), "length": 32},
+        ]
+        cancel_event = Mock()
+        cancel_event.is_set.side_effect = [False, True]
+
+        result = InvestigationEngine().analyze(records, cancel_event=cancel_event)
+
+        self.assertEqual(1, result["packet_count"])
+        self.assertEqual(1, len(result["analyses"]))
+        self.assertEqual(31, result["total_bytes"])
 
 
 if __name__ == "__main__":

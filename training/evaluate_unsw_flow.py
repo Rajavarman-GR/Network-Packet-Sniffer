@@ -45,7 +45,7 @@ def build_argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact", type=Path, required=True, help="UNSW flow pipeline artifact.")
     parser.add_argument("--metadata", type=Path, help="Metadata JSON; defaults beside the artifact.")
-    dataset_root = Path(os.environ.get("UNSW_NB15_DIR", str(DEFAULT_DATASET_ROOT)))
+    dataset_root = Path(os.environ.get("UNSW_NB15_DIR") or DEFAULT_DATASET_ROOT).expanduser()
     parser.add_argument(
         "--train",
         type=Path,
@@ -54,7 +54,7 @@ def build_argument_parser():
     parser.add_argument(
         "--test",
         type=Path,
-        default=DEFAULT_DATASET_ROOT / "UNSW_NB15_testing-set.csv",
+        default=dataset_root / "UNSW_NB15_testing-set.csv",
     )
     parser.add_argument("--format", choices=("json", "text"), default="json", help="Report output format.")
     return parser

@@ -15,17 +15,17 @@ batches), and PacketManager retention. `tracemalloc` records Python allocations
 during retention only; packet objects are prebuilt, so this is not total process
 memory. Results depend on host, Python, Scapy, and filesystem versions.
 
-The audit reran the default workload on Windows 11, Python 3.14.4, and Scapy
-2.7.0. These figures are a reproducible starting point, not a before/after
+The Phase 5.1 run reran the default workload on Windows 11, Python 3.14.4, and
+Scapy 2.7.0. These figures are a reproducible starting point, not a before/after
 comparison: no comparable pre-change benchmark was available. Values are
 elapsed seconds and packets per second (rounded). Unified analysis was supplied
 an explicit unavailable AI result; this run did not load or benchmark a model.
 
 | Packets | Parser | Decoder | Unified analysis | Flow tracker | Investigation | PCAP read | Retention |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1,000 | 0.0164 s / 60,963 pps | 0.0674 s / 14,844 pps | 0.0732 s / 13,658 pps | 0.2240 s / 4,465 pps | 0.5762 s / 1,735 pps | 0.1674 s / 5,973 pps | 0.0040 s / 251,300 pps |
-| 10,000 | 0.1749 s / 57,185 pps | 0.6639 s / 15,062 pps | 0.7190 s / 13,909 pps | 1.8908 s / 5,289 pps | 5.0830 s / 1,967 pps | 1.5855 s / 6,307 pps | 0.0376 s / 266,119 pps |
-| 50,000 | 0.9057 s / 55,207 pps | 3.4008 s / 14,703 pps | 3.5893 s / 13,930 pps | 10.2103 s / 4,897 pps | 4.9550 s / 2,018 pps* | 8.1728 s / 6,118 pps | 0.1890 s / 264,498 pps |
+| 1,000 | 0.0380 s / 26,330 pps | 0.1435 s / 6,971 pps | 0.1282 s / 7,799 pps | 0.3395 s / 2,946 pps | 0.5120 s / 1,953 pps | 0.2864 s / 3,491 pps | 0.0059 s / 168,745 pps |
+| 10,000 | 0.3342 s / 29,924 pps | 1.3248 s / 7,548 pps | 1.2884 s / 7,761 pps | 3.4896 s / 2,866 pps | 5.5613 s / 1,798 pps | 3.1484 s / 3,176 pps | 0.0570 s / 175,470 pps |
+| 50,000 | 1.6650 s / 30,030 pps | 6.2165 s / 8,043 pps | 6.5613 s / 7,620 pps | 27.6603 s / 1,808 pps | 13.2865 s / 753 pps* | 31.9654 s / 1,564 pps | 0.7356 s / 67,971 pps |
 
 At 50,000 input packets, the benchmark retained 10,000 PacketManager records
 with a measured Python allocation peak of 6,222,752 bytes. The corresponding
