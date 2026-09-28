@@ -10,6 +10,8 @@ from ai.detector import ThreatDetector
 from ai.feature_extractor import extract_features
 from ai.flow_tracker import FlowTracker
 from core.decoder import decode_packet
+from core.explanations import explain_protocol
+from gui.presentation import EMPTY_STATES, dashboard_model, decoder_view_model, investigation_groups, operation_label
 from core.filter_engine import build_bpf_filter
 from core.investigation import InvestigationEngine
 from core.interfaces import get_network_interfaces, resolve_scapy_interface
@@ -33,6 +35,7 @@ from utils.constants import (
     WINDOW_WIDTH,
     WINDOW_HEIGHT,
 )
+from utils.theme import FONT_FAMILY, SIZES, apply_tk_theme, get_tokens
 from utils.validator import (
     validate_export_filename,
     validate_interface,
@@ -89,6 +92,7 @@ class PacketSnifferApp:
         self.max_packets = self._configured_max_packets()
         self.bandwidth_bytes = 0
         self.bandwidth_start_time = None
+        self.capture_start_packets = None
         self.display_protocol_var = None
         self.display_filter = "ALL"
         self.search_keyword = ""
@@ -106,6 +110,7 @@ class PacketSnifferApp:
         self.root.bind("<Control-s>", lambda event: self.export_packets())
         self.root.bind("<F5>", lambda event: self.start_capture())
         self.apply_theme()
+        self._set_operation_state("idle")
 
     def _configured_max_packets(self):
         try:
@@ -114,7 +119,7 @@ class PacketSnifferApp:
             return 10000
 
     def configure_window(self):
-        self.root.title("Network Packet Sniffer")
+        self.root.title("Network Security Analyst Workbench")
         self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self.root.minsize(1000, 650)
         self.root.configure(bg=DARK_BG)
@@ -133,7 +138,7 @@ class PacketSnifferApp:
             "Treeview.Heading",
             background=PRIMARY,
             foreground="white",
-            font=("Segoe UI", 10, "bold"),
+            font=(FONT_FAMILY, SIZES["font_body"], "bold"),
         )
 
     def create_menu(self):
@@ -152,6 +157,8 @@ class PacketSnifferApp:
         capture_menu.add_command(label="Stop Capture", command=self.stop_capture)
 
         help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="Getting Started", command=self.show_beginner_guide)
+        help_menu.add_separator()
         help_menu.add_command(
             label="About",
             command=lambda: messagebox.showinfo(
@@ -166,33 +173,48 @@ class PacketSnifferApp:
 
         self.root.config(menu=menubar)
 
+    def show_beginner_guide(self):
+        """Show the concise first-use glossary without interrupting capture."""
+        messagebox.showinfo(
+            "Getting Started",
+            "A packet is one unit of network traffic. Its source and destination identify endpoints; ports commonly identify services. "
+            "A protocol defines how devices format and exchange messages. A flow groups related packets into a conversation.\n\n"
+            "Select a packet and open Decode Packet. Beginner explains its protocol stack; Analyst shows decoded application details; "
+            "Technical / Raw shows Scapy fields and payload bytes. Security findings are heuristic evidence, while AI results are separate model outputs.",
+            parent=self.root,
+        )
+
     def create_header(self):
-        header = tk.Frame(self.root, bg=HEADER_BG, height=70)
+        self.header = tk.Frame(self.root, bg=HEADER_BG, height=70)
+        header = self.header
         header.pack(fill="x")
 
         title = tk.Label(
             header,
-            text="Network Packet Sniffer",
-            font=("Segoe UI", 22, "bold"),
+            text="Network Security Analyst Workbench",
+            font=(FONT_FAMILY, SIZES["font_title"], "bold"),
             bg=HEADER_BG,
             fg="white",
         )
-        title.pack(side="left", padx=20, pady=15)
+        title.pack(side="left", padx=18, pady=(10, 0))
 
-        version = tk.Label(
+        subtitle = tk.Label(
             header,
-            text="Version 2.0",
+            text="Packets · Conversations · Investigation",
             bg=HEADER_BG,
-            fg="#A0A0A0",
-            font=("Segoe UI", 10),
+            fg="#A0A0A0", font=(FONT_FAMILY, SIZES["font_small"]),
         )
-        version.pack(side="right", padx=20)
+        subtitle.pack(anchor="w", padx=18, pady=(0, 9))
+        self.capture_state_badge = tk.Label(header, text="IDLE", bg="#334155", fg="white",
+                                            font=(FONT_FAMILY, SIZES["font_small"], "bold"), padx=SIZES["space_md"], pady=SIZES["space_sm"])
+        self.capture_state_badge.place(relx=1.0, x=-18, y=20, anchor="ne")
 
     def create_toolbar(self):
         toolbar = tk.Frame(self.root, bg=PANEL_BG, height=65)
+        self.toolbar = toolbar
         toolbar.pack(fill="x", padx=10, pady=(5, 0))
 
-        tk.Label(toolbar, text="Interface", bg=PANEL_BG, fg="white", font=("Segoe UI", 10)).grid(row=0, column=0, padx=(15, 5), pady=15)
+        tk.Label(toolbar, text="Interface", bg=PANEL_BG, fg="white", font=(FONT_FAMILY, SIZES["font_body"])).grid(row=0, column=0, padx=(SIZES["space_md"], SIZES["space_xs"]), pady=SIZES["space_md"])
 
         self.interface_var = tk.StringVar(value=self.config.get("default_interface", ""))
         self.interface_combo = ttk.Combobox(toolbar, textvariable=self.interface_var, width=28, state="readonly")
@@ -204,7 +226,7 @@ class PacketSnifferApp:
                 self.interface_combo.current(0)
         self.interface_combo.grid(row=0, column=1)
 
-        tk.Label(toolbar, text="Capture filter", bg=PANEL_BG, fg="white", font=("Segoe UI", 10)).grid(row=0, column=2, padx=(20, 5))
+        tk.Label(toolbar, text="Capture filter", bg=PANEL_BG, fg="white", font=(FONT_FAMILY, SIZES["font_body"])).grid(row=0, column=2, padx=(SIZES["space_lg"], SIZES["space_xs"]))
 
         self.protocol_var = tk.StringVar(value=self.config.get("default_protocol", "ALL"))
         self.protocol_combo = ttk.Combobox(
@@ -225,7 +247,7 @@ class PacketSnifferApp:
             fg="white",
             width=12,
             relief="flat",
-            font=("Segoe UI", 10, "bold"),
+            font=(FONT_FAMILY, SIZES["font_body"], "bold"),
         )
         self.start_button.grid(row=0, column=4, padx=(20, 8))
 
@@ -237,7 +259,7 @@ class PacketSnifferApp:
             fg="white",
             width=12,
             relief="flat",
-            font=("Segoe UI", 10, "bold"),
+            font=(FONT_FAMILY, SIZES["font_body"], "bold"),
         )
         self.stop_button.grid(row=0, column=5, padx=5)
 
@@ -249,9 +271,20 @@ class PacketSnifferApp:
             fg="white",
             width=12,
             relief="flat",
-            font=("Segoe UI", 10),
+            font=(FONT_FAMILY, SIZES["font_body"]),
         )
         self.export_button.grid(row=0, column=6, padx=(12, 8))
+
+        self.open_pcap_button = tk.Button(
+            toolbar, text="Open PCAP", command=self.open_pcap, bg=PRIMARY, fg="white",
+            width=11, relief="flat", font=(FONT_FAMILY, SIZES["font_body"]),
+        )
+        self.open_pcap_button.grid(row=0, column=7, padx=(4, 8))
+
+        self.cancel_load_button = tk.Button(toolbar, text="Cancel Load", command=self.cancel_pcap_load,
+                                            bg=ERROR, fg="white", width=10, relief="flat",
+                                            font=(FONT_FAMILY, SIZES["font_body"]), state="disabled")
+        self.cancel_load_button.grid(row=0, column=8, padx=(4, 8))
 
         self.settings_button = tk.Button(
             toolbar,
@@ -261,9 +294,11 @@ class PacketSnifferApp:
             fg="black",
             width=12,
             relief="flat",
-            font=("Segoe UI", 10),
+            font=(FONT_FAMILY, SIZES["font_body"]),
         )
-        self.settings_button.grid(row=0, column=7, padx=(0, 12))
+        self.settings_button.grid(row=0, column=9, padx=(0, 12))
+        for column in range(10):
+            toolbar.grid_columnconfigure(column, weight=1 if column == 1 else 0)
 
     def create_body(self):
         self.body = tk.Frame(self.root, bg=DARK_BG)
@@ -271,10 +306,12 @@ class PacketSnifferApp:
 
         self.workspace = ttk.Notebook(self.body)
         self.workspace.pack(fill="both", expand=True)
+        self.overview_view = tk.Frame(self.workspace, bg=PANEL_BG)
         self.packet_view = tk.Frame(self.workspace, bg=PANEL_BG)
         self.flows_view = tk.Frame(self.workspace, bg=PANEL_BG)
         self.investigation_view = tk.Frame(self.workspace, bg=PANEL_BG)
         self.analysis_stats_view = tk.Frame(self.workspace, bg=PANEL_BG)
+        self.workspace.add(self.overview_view, text="Overview")
         self.workspace.add(self.packet_view, text="Packets")
         self.workspace.add(self.flows_view, text="Flows")
         self.workspace.add(self.investigation_view, text="Investigation")
@@ -287,18 +324,36 @@ class PacketSnifferApp:
         self.right_panel.pack(side="right", fill="y", padx=(10, 0))
         self.right_panel.pack_propagate(False)
 
+        self.create_overview()
         self.create_packet_table()
         self.create_packet_details()
         self.create_statistics()
         self.create_investigation_views()
 
     def create_investigation_views(self):
+        flow_header = tk.Frame(self.flows_view, bg=PANEL_BG)
+        flow_header.pack(fill="x", padx=14, pady=(12, 4))
+        tk.Label(flow_header, text="Conversations", bg=PANEL_BG, fg="white", font=(FONT_FAMILY, SIZES["font_subtitle"], "bold")).pack(anchor="w")
+        tk.Label(flow_header, text="Bidirectional groups from retained packets; these are not reconstructed TCP streams.",
+                 bg=PANEL_BG, fg="#A0A0A0", wraplength=760, justify="left").pack(anchor="w", pady=(3, 0))
         flow_columns = ("Source", "Destination", "Src Port", "Dst Port", "Protocol", "Packets", "Bytes", "Duration")
-        self.flow_table = ttk.Treeview(self.flows_view, columns=flow_columns, show="headings")
+        flow_box = ttk.Frame(self.flows_view)
+        flow_box.pack(fill="both", expand=True, padx=10, pady=(5, 10))
+        self.flow_box = flow_box
+        self.flow_table = ttk.Treeview(flow_box, columns=flow_columns, show="headings")
         for column, width in zip(flow_columns, (190, 190, 80, 80, 85, 80, 100, 95)):
             self.flow_table.heading(column, text=column)
             self.flow_table.column(column, width=width, anchor="center")
-        self.flow_table.pack(fill="both", expand=True, padx=10, pady=10)
+        flow_y = ttk.Scrollbar(flow_box, orient="vertical", command=self.flow_table.yview)
+        flow_x = ttk.Scrollbar(flow_box, orient="horizontal", command=self.flow_table.xview)
+        self.flow_table.configure(yscrollcommand=flow_y.set, xscrollcommand=flow_x.set)
+        self.flow_table.grid(row=0, column=0, sticky="nsew")
+        flow_y.grid(row=0, column=1, sticky="ns")
+        flow_x.grid(row=1, column=0, sticky="ew")
+        flow_box.grid_rowconfigure(0, weight=1)
+        flow_box.grid_columnconfigure(0, weight=1)
+        self.flow_empty_label = tk.Label(self.flows_view, text=EMPTY_STATES["flows"][0] + "\n" + EMPTY_STATES["flows"][1],
+                                         bg=PANEL_BG, fg="#A0A0A0", anchor="w", justify="left")
         self.flow_table.bind("<Double-1>", self._jump_from_flow)
 
         controls = tk.Frame(self.investigation_view, bg=PANEL_BG)
@@ -308,17 +363,87 @@ class PacketSnifferApp:
         self.cancel_pcap_button.pack(side="left", padx=(8, 0))
         tk.Label(controls, text="Analysis uses bounded retained packets; select a row and double-click to open its packet.",
                  bg=PANEL_BG, fg="#A0A0A0").pack(side="left", padx=10)
-        self.investigation_tree = ttk.Treeview(self.investigation_view,
-            columns=("Category", "Event / evidence", "Packet ID", "Time"), show="headings")
-        for column, width in (("Category", 130), ("Event / evidence", 600), ("Packet ID", 100), ("Time", 150)):
-            self.investigation_tree.heading(column, text=column)
-            self.investigation_tree.column(column, width=width, anchor="w")
-        self.investigation_tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        self.investigation_tree.bind("<Double-1>", self._jump_from_investigation)
+        self.investigation_summary = tk.Label(self.investigation_view,
+            text="No investigation results yet. Analysis covers retained packets only.",
+            bg=PANEL_BG, fg="#A0A0A0", anchor="w", justify="left", wraplength=1000)
+        self.investigation_summary.pack(fill="x", padx=14, pady=(4, 8))
+        self.evidence_notebook = ttk.Notebook(self.investigation_view)
+        self.evidence_notebook.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.evidence_tables = {}
+        self.evidence_packet_ids = {}
+        self.evidence_empty_labels = {}
+        for group in ("DNS", "HTTP", "TLS", "AI Findings", "Security Findings", "Timeline"):
+            frame = tk.Frame(self.evidence_notebook, bg=PANEL_BG)
+            self.evidence_notebook.add(frame, text=group)
+            empty_key = "timeline" if group == "Timeline" else group.casefold().split()[0]
+            heading, helper = EMPTY_STATES.get(empty_key, EMPTY_STATES["findings"])
+            empty_label = tk.Label(frame, text="{}\n{}".format(heading, helper), bg=PANEL_BG, fg="#A0A0A0", justify="left", anchor="w")
+            empty_label.pack(fill="x", padx=12, pady=10)
+            self.evidence_empty_labels[group] = empty_label
+            table = ttk.Treeview(frame, columns=("Time", "Type", "Details", "Source", "Destination", "Packet"), show="headings")
+            widths = {"Time": 145, "Type": 150, "Details": 360, "Source": 165, "Destination": 165, "Packet": 85}
+            for column in table["columns"]:
+                table.heading(column, text=column)
+                table.column(column, width=widths[column], minwidth=70, anchor="w", stretch=column in {"Details", "Source", "Destination"})
+            table_box = ttk.Frame(frame)
+            table_box.pack(fill="both", expand=True, padx=6, pady=6)
+            yscroll = ttk.Scrollbar(table_box, orient="vertical", command=table.yview)
+            xscroll = ttk.Scrollbar(table_box, orient="horizontal", command=table.xview)
+            table.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+            table.grid(row=0, column=0, sticky="nsew")
+            yscroll.grid(row=0, column=1, sticky="ns")
+            xscroll.grid(row=1, column=0, sticky="ew")
+            table_box.grid_rowconfigure(0, weight=1)
+            table_box.grid_columnconfigure(0, weight=1)
+            table.bind("<Double-1>", self._jump_from_grouped_evidence)
+            self.evidence_tables[group] = table
+            self.evidence_packet_ids[table] = {}
 
-        self.analysis_stats_text = tk.Text(self.analysis_stats_view, bg=TABLE_BG, fg="white", wrap="word", relief="flat")
-        self.analysis_stats_text.pack(fill="both", expand=True, padx=10, pady=10)
+        self.statistics_text = tk.Text(self.analysis_stats_view, bg=TABLE_BG, fg="white", wrap="word", relief="flat", padx=16, pady=14)
+        statistics_scroll = ttk.Scrollbar(self.analysis_stats_view, orient="vertical", command=self.statistics_text.yview)
+        self.statistics_text.configure(yscrollcommand=statistics_scroll.set)
+        self.statistics_text.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
+        statistics_scroll.pack(side="right", fill="y", padx=(0, 10), pady=10)
         self._render_investigation_views(None)
+
+    def create_overview(self):
+        tk.Label(self.overview_view, text="Traffic at a glance", bg=PANEL_BG, fg="white",
+                 font=(FONT_FAMILY, SIZES["font_title"], "bold")).pack(anchor="w", padx=SIZES["space_lg"], pady=(SIZES["space_lg"], SIZES["space_xs"]))
+        self.overview_state = tk.Label(self.overview_view, text=operation_label("idle"), bg=PANEL_BG, fg="#A0A0A0", anchor="w")
+        self.overview_state.pack(anchor="w", padx=18, pady=(0, 12))
+        cards = tk.Frame(self.overview_view, bg=PANEL_BG)
+        cards.pack(fill="x", padx=12, pady=(0, 12))
+        names = (("Packets", "packets"), ("Packets / sec", "packets_per_second"), ("Flows", "active_flows"),
+                 ("Bytes analyzed", "bytes"), ("AI suspicious", "suspicious_ai"), ("AI high risk", "high_risk_ai"),
+                 ("Security findings", "security_findings"))
+        self.overview_metrics = {}
+        for index, (label, key) in enumerate(names):
+            card = tk.LabelFrame(cards, text=label, bg=PANEL_BG, fg="#A0A0A0", padx=12, pady=8)
+            card.grid(row=index // 4, column=index % 4, sticky="nsew", padx=4, pady=4)
+            value = tk.Label(card, text="—", bg=PANEL_BG, fg="white", font=(FONT_FAMILY, SIZES["font_metric"], "bold"), anchor="w")
+            value.pack(fill="x")
+            self.overview_metrics[key] = value
+        for column in range(4):
+            cards.grid_columnconfigure(column, weight=1)
+        content = tk.Frame(self.overview_view, bg=PANEL_BG)
+        content.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+        recent_frame = tk.LabelFrame(content, text="Recent retained packets", bg=PANEL_BG, fg="white", padx=8, pady=8)
+        recent_frame.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        self.overview_recent = ttk.Treeview(recent_frame, columns=("Time", "Protocol", "Source", "Destination", "AI"), show="headings", height=10)
+        for col, width in (("Time", 90), ("Protocol", 85), ("Source", 180), ("Destination", 180), ("AI", 110)):
+            self.overview_recent.heading(col, text=col)
+            self.overview_recent.column(col, width=width, minwidth=55, anchor="w", stretch=col in {"Source", "Destination"})
+        self.overview_recent.pack(fill="both", expand=True)
+        self.overview_recent.bind("<Double-1>", self._jump_from_overview)
+        context_box = ttk.Frame(content)
+        context_box.pack(side="right", fill="both", expand=True, padx=(6, 0))
+        self.overview_context = tk.Text(context_box, width=38, bg=TABLE_BG, fg="white", wrap="word", relief="flat", padx=10, pady=10)
+        context_scroll = ttk.Scrollbar(context_box, orient="vertical", command=self.overview_context.yview)
+        self.overview_context.configure(yscrollcommand=context_scroll.set)
+        self.overview_context.pack(side="left", fill="both", expand=True)
+        context_scroll.pack(side="right", fill="y")
+        self.overview_context.insert("end", "{}\n\n{}".format(*EMPTY_STATES["overview"]))
+        self.overview_context.configure(state="disabled")
 
     def analyze_retained_packets(self):
         if self.investigation_busy or self._closing:
@@ -328,7 +453,7 @@ class PacketSnifferApp:
         generation = self.investigation_generation
         self.investigation_cancel_event = threading.Event()
         self.investigation_busy = True
-        self.status.config(text="Analyzing retained packets...")
+        self._set_operation_state("analyzing", "retained packet window")
         self._investigation_thread = threading.Thread(
             target=self._investigation_worker,
             args=(records, generation, self.investigation_cancel_event), daemon=True)
@@ -338,7 +463,7 @@ class PacketSnifferApp:
     def cancel_pcap_load(self):
         if self.pcap_loading:
             self.pcap_cancel_event.set()
-            self.status.config(text="Cancelling PCAP load after current packet batch...")
+            self._set_operation_state("loading", "cancelling after current batch")
 
     def _investigation_worker(self, records, generation, cancel_event):
         try:
@@ -354,40 +479,110 @@ class PacketSnifferApp:
     def _render_investigation_views(self, data):
         for item in self.flow_table.get_children():
             self.flow_table.delete(item)
-        for item in self.investigation_tree.get_children():
-            self.investigation_tree.delete(item)
+        for group, table in self.evidence_tables.items():
+            for item in table.get_children():
+                table.delete(item)
+            self.evidence_packet_ids[table].clear()
         if data is None:
-            self.analysis_stats_text.delete("1.0", "end")
-            self.analysis_stats_text.insert("end", "No investigation results yet. Analyze retained packets to build flows and evidence.")
+            self.flow_empty_label.pack(fill="x", padx=14, pady=(0, 10), before=self.flow_box)
+            self.investigation_summary.config(text="No investigation results yet. Analysis covers retained packets only.")
+            self._investigation_report_lines = ["", "INVESTIGATION", "Unavailable until retained packets are analyzed."]
+            self._overview_context_text = "{}\n\n{}".format(*EMPTY_STATES["overview"])
+            self._refresh_statistics_report()
+            self._update_overview()
             return
         self.flow_packet_ids = {}
+        if data["flows"]:
+            self.flow_empty_label.pack_forget()
+        else:
+            self.flow_empty_label.pack(fill="x", padx=14, pady=(0, 10), before=self.flow_box)
         for index, flow in enumerate(data["flows"]):
             iid = "flow:{}".format(index)
             self.flow_packet_ids[iid] = flow["packet_ids"]
             self.flow_table.insert("", "end", iid=iid, values=(flow["source"], flow["destination"], flow["source_port"],
                 flow["destination_port"], flow["protocol"], flow["packet_count"], flow["total_bytes"], "{:.3f}s".format(flow["duration"])))
-        evidence = []
-        for category, records in (("DNS", data["dns"]), ("HTTP", data["http"]), ("TLS", data["tls"]), ("Security", data["findings"])):
-            for record in records:
-                desc = record.get("details", {}).get("message") if category == "Security" else str(record)
-                evidence.append((category, desc, record.get("packet_id"), ""))
-        evidence.extend((event["event_type"], event["description"], event["packet_id"], str(event["timestamp"])) for event in data["timeline"])
-        for index, values in enumerate(evidence):
-            self.investigation_tree.insert("", "end", iid="evidence:{}".format(index), values=values)
+        groups = investigation_groups(data)
+        for group, rows in groups.items():
+            table = self.evidence_tables[group]
+            if rows:
+                self.evidence_empty_labels[group].pack_forget()
+            else:
+                self.evidence_empty_labels[group].pack(fill="x", padx=12, pady=10)
+            for index, values in enumerate(rows):
+                iid = "{}:{}".format(group.replace(" ", "_").lower(), index)
+                table.insert("", "end", iid=iid, values=values[:6])
+                self.evidence_packet_ids[table][iid] = values[6]
         protocols = {}
         for record in data["analyses"]:
             protocol = record["metadata"].get("protocol", "OTHER")
             protocols[protocol] = protocols.get(protocol, 0) + 1
         ai_findings = sum(item["source_type"] == "ai" for item in data["findings"])
         decoder_findings = len(data["findings"]) - ai_findings
-        summary = ["Retained packets: {}".format(data["packet_count"]), "Total bytes: {}".format(data["total_bytes"]),
-            "Conversations: {}".format(len(data["flows"])), "AI findings: {}".format(ai_findings),
-            "Decoder heuristic findings: {}".format(decoder_findings), "", "Protocol distribution:"]
-        summary.extend("  {}: {}".format(name, count) for name, count in sorted(protocols.items()))
-        summary.extend(["", "Top talkers:"])
-        summary.extend("  {}: {} packets / {} bytes".format(item["source"], item["packet_count"], item["byte_count"]) for item in data["top_talkers"][:10])
-        self.analysis_stats_text.delete("1.0", "end")
-        self.analysis_stats_text.insert("end", "\n".join(summary))
+        self.investigation_summary.config(text=("Analyzed {:,} retained packets · {} conversations · {} DNS · {} HTTP · {} TLS · {} AI findings · {} heuristic findings"
+            .format(data["packet_count"], len(data["flows"]), len(data["dns"]), len(data["http"]), len(data["tls"]), ai_findings, decoder_findings)))
+        self._investigation_report_lines = ["", "INVESTIGATION (RETAINED WINDOW)",
+            "Analyzed packets: {:,}".format(data["packet_count"]), "Analyzed bytes: {:,}".format(data["total_bytes"]),
+            "Bidirectional conversations: {:,}".format(len(data["flows"])),
+            "DNS: {:,}   HTTP: {:,}   TLS: {:,}".format(len(data["dns"]), len(data["http"]), len(data["tls"])), "", "PROTOCOL DISTRIBUTION"]
+        self._investigation_report_lines.extend("{}: {:,}".format(name, count) for name, count in sorted(protocols.items()))
+        self._investigation_report_lines.extend(["", "TOP TALKERS"])
+        self._investigation_report_lines.extend("{} — {:,} packets / {:,} bytes".format(item["source"], item["packet_count"], item["byte_count"]) for item in data["top_talkers"][:10])
+        self._investigation_report_lines.extend(["", "SECURITY / AI", "AI classifications: {:,}".format(ai_findings),
+            "Decoder heuristic observations: {:,}".format(decoder_findings),
+            "AI and heuristic sources remain distinct; neither count is a confirmed attack total."])
+        self._overview_context_text = "PROTOCOL DISTRIBUTION\n{}\n\nTOP TALKERS\n{}\n\nRECENT FINDINGS\n{}".format(
+            "\n".join("{}: {:,}".format(k, v) for k, v in sorted(protocols.items())) or "No protocol records",
+            "\n".join("{} · {:,} packets".format(row["source"], row["packet_count"]) for row in data["top_talkers"][:5]) or "No endpoint data",
+            "\n".join("{}: {}".format("AI" if item["source_type"] == "ai" else "Heuristic", item.get("details", {}).get("label") or item.get("details", {}).get("message", "Observation")) for item in data["findings"][-5:]) or "No findings in this retained analysis.")
+        self._refresh_statistics_report()
+        self._update_overview()
+
+    def _refresh_statistics_report(self):
+        lines = ["TRAFFIC", "Packets seen: {:,}".format(self.packet_count), "Packets retained: {:,} / {:,}".format(len(self.packet_manager), self.max_packets),
+                 "Dropped before processing: {:,}".format(self.dropped_packets), "",
+                 "CAPTURED PROTOCOL COUNTS", "TCP: {:,}   UDP: {:,}   DNS: {:,}   ARP: {:,}".format(self.tcp_count, self.udp_count, self.dns_count, self.arp_count),
+                 "ICMP: {:,}   ICMPv6: {:,}   Other: {:,}".format(self.icmp_count, self.icmpv6_count, self.other_count)]
+        lines.extend(getattr(self, "_investigation_report_lines", ["", "INVESTIGATION", "Unavailable until retained packets are analyzed."]))
+        self.statistics_text.delete("1.0", "end")
+        self.statistics_text.insert("end", "\n".join(lines))
+
+    def _jump_from_grouped_evidence(self, event=None):
+        table = event.widget if event is not None else self.evidence_tables.get(self.evidence_notebook.tab(self.evidence_notebook.select(), "text"))
+        if table is None:
+            return
+        selected = table.selection()
+        if selected:
+            self._jump_to_packet(self.evidence_packet_ids.get(table, {}).get(selected[0]))
+
+    def _jump_from_overview(self, event=None):
+        selected = self.overview_recent.selection()
+        if selected:
+            self._jump_to_packet(selected[0])
+
+    def _update_overview(self):
+        if not hasattr(self, "overview_metrics"):
+            return
+        elapsed = time.time() - self.bandwidth_start_time if self.bandwidth_start_time else 0
+        pps = None
+        if elapsed > 0 and self.capture_start_packets is not None:
+            pps = (self.packet_count - self.capture_start_packets) / elapsed
+        model = dashboard_model({"packets": len(self.packet_manager), "packets_per_second": pps,
+            "suspicious_ai": self.suspicious_count, "high_risk_ai": self.high_risk_count}, self.investigation_data)
+        for key, value in model.items():
+            if key not in self.overview_metrics:
+                continue
+            shown = "Unavailable" if value is None else ("{:,.1f}".format(value) if key == "packets_per_second" else "{:,}".format(value))
+            self.overview_metrics[key].config(text=shown)
+        for item in self.overview_recent.get_children():
+            self.overview_recent.delete(item)
+        recent = self.packet_manager.records()[-10:]
+        for record in reversed(recent):
+            self.overview_recent.insert("", "end", iid=str(record["id"]), values=(record.get("timestamp"), record.get("protocol"),
+                record.get("src"), record.get("dst"), self._ai_label(record)))
+        self.overview_context.configure(state="normal")
+        self.overview_context.delete("1.0", "end")
+        self.overview_context.insert("end", getattr(self, "_overview_context_text", EMPTY_STATES["overview"][0]))
+        self.overview_context.configure(state="disabled")
 
     def _jump_to_packet(self, packet_id):
         if packet_id is None:
@@ -407,9 +602,7 @@ class PacketSnifferApp:
             self.show_packet_details(None)
 
     def _jump_from_investigation(self, event=None):
-        selected = self.investigation_tree.selection()
-        if selected:
-            self._jump_to_packet(self.investigation_tree.set(selected[0], "Packet ID"))
+        self._jump_from_grouped_evidence(event)
 
     def _jump_from_flow(self, event=None):
         selected = self.flow_table.selection()
@@ -419,7 +612,7 @@ class PacketSnifferApp:
                 self._jump_to_packet(packet_ids[0])
 
     def create_packet_table(self):
-        title = tk.Label(self.left_panel, text="Captured Packets", bg=PANEL_BG, fg="white", font=("Segoe UI", 12, "bold"))
+        title = tk.Label(self.left_panel, text="Captured Packets", bg=PANEL_BG, fg="white", font=(FONT_FAMILY, SIZES["font_section"], "bold"))
         title.pack(anchor="w", padx=15, pady=(15, 5))
 
         search_frame = tk.Frame(self.left_panel, bg=PANEL_BG)
@@ -498,7 +691,7 @@ class PacketSnifferApp:
         title_row = tk.Frame(self.right_panel, bg=PANEL_BG)
         title_row.pack(fill="x", padx=15, pady=(15, 5))
 
-        title = tk.Label(title_row, text="Packet Details", bg=PANEL_BG, fg="white", font=("Segoe UI", 12, "bold"))
+        title = tk.Label(title_row, text="Packet Details", bg=PANEL_BG, fg="white", font=(FONT_FAMILY, SIZES["font_section"], "bold"))
         title.pack(side="left")
 
         tk.Button(
@@ -508,7 +701,7 @@ class PacketSnifferApp:
             bg=PRIMARY,
             fg="white",
             relief="flat",
-            font=("Segoe UI", 9),
+            font=(FONT_FAMILY, SIZES["font_small"]),
         ).pack(side="right")
 
         details_frame = tk.Frame(self.right_panel, bg=PANEL_BG)
@@ -527,10 +720,10 @@ class PacketSnifferApp:
         details_scrollbar.pack(side="right", fill="y")
 
     def create_statistics(self):
-        stats = tk.LabelFrame(self.right_panel, text="Packet Statistics", bg=PANEL_BG, fg="white", font=("Segoe UI", 10, "bold"))
+        stats = tk.LabelFrame(self.right_panel, text="Packet Statistics", bg=PANEL_BG, fg="white", font=(FONT_FAMILY, SIZES["font_body"], "bold"))
         stats.pack(fill="x", padx=15, pady=(8, 15))
         self.stat_labels = {}
-        stat_names = ["Captured", "Displayed", "TCP", "UDP", "DNS", "ARP", "ICMP", "ICMPv6", "Other", "Dropped", "Threats", "Suspicious", "High Risk", "AI Status"]
+        stat_names = ["Captured", "Displayed", "TCP", "UDP", "DNS", "ARP", "ICMP", "ICMPv6", "Other", "Dropped", "AI Findings", "Suspicious", "High Risk", "AI Status"]
         for index, name in enumerate(stat_names):
             row, column = divmod(index, 2)
             tk.Label(stats, text=name, bg=PANEL_BG, fg="#A0A0A0", anchor="w").grid(row=row, column=column * 2, sticky="w", padx=(8, 2), pady=2)
@@ -542,7 +735,7 @@ class PacketSnifferApp:
         self.udp_packets = self.stat_labels["UDP"]
         self.icmp_packets = self.stat_labels["ICMP"]
         self.dropped_packets_label = self.stat_labels["Dropped"]
-        self.threats = self.stat_labels["Threats"]
+        self.threats = self.stat_labels["AI Findings"]
         self.stat_labels["AI Status"].config(fg=WARNING)
         self.bandwidth = tk.Label(stats, text="Bandwidth: 0 KB/s", bg=PANEL_BG, fg="white")
         self.bandwidth.grid(row=7, column=0, columnspan=4, sticky="w", padx=8, pady=(5, 8))
@@ -614,16 +807,40 @@ class PacketSnifferApp:
 
     def apply_theme(self):
         theme = self.config.get("theme", "dark")
-        if theme == "light":
-            self.root.configure(bg="#f3f4f6")
-            self.body.configure(bg="#f3f4f6")
-            self.left_panel.configure(bg="#ffffff")
-            self.right_panel.configure(bg="#ffffff")
-        else:
-            self.root.configure(bg=DARK_BG)
-            self.body.configure(bg=DARK_BG)
-            self.left_panel.configure(bg=PANEL_BG)
-            self.right_panel.configure(bg=PANEL_BG)
+        tokens = get_tokens(theme)
+        apply_tk_theme(self.root, theme)
+        self.root.configure(bg=tokens["background"])
+        self.body.configure(bg=tokens["background"])
+        self.header.configure(bg=tokens["navigation"])
+        self.toolbar.configure(bg=tokens["surface"])
+        for child in self.header.winfo_children():
+            if child is self.capture_state_badge:
+                continue
+            try:
+                child.configure(background=tokens["navigation"], foreground=tokens["text"])
+            except tk.TclError:
+                pass
+        for name in ("TCP", "UDP", "ICMP", "ICMPv6", "DNS", "ARP", "OTHER"):
+            try:
+                self.packet_table.tag_configure(name, background=tokens["table"], foreground=tokens["text"])
+            except tk.TclError:
+                pass
+        self.packet_table.tag_configure("AI_SUSPICIOUS", foreground=tokens["warning"])
+        self.packet_table.tag_configure("AI_HIGH_RISK", foreground=tokens["danger"])
+
+    def _set_operation_state(self, state, detail=None):
+        text = operation_label(state, detail)
+        self.operation_state = state
+        if hasattr(self, "status"):
+            self.status.config(text="  {}".format(text))
+        if hasattr(self, "overview_state"):
+            self.overview_state.config(text=text)
+        if hasattr(self, "capture_state_badge"):
+            tokens = get_tokens(self.config.get("theme", "dark"))
+            colors = {"idle": tokens["muted"], "capturing": tokens["success"], "loading": tokens["info"],
+                      "analyzing": tokens["warning"], "completed": tokens["accent"], "error": tokens["danger"]}
+            badge_text = tokens["background"] if self.config.get("theme", "dark") == "dark" else "#FFFFFF"
+            self.capture_state_badge.config(text=state.upper(), bg=colors.get(state, tokens["muted"]), fg=badge_text)
 
     def start_capture(self):
         interface = self.interface_var.get()
@@ -649,7 +866,9 @@ class PacketSnifferApp:
 
         self.bandwidth_start_time = time.time()
         self.bandwidth_bytes = 0
-        self.status.config(text=f"Capturing on {interface}")
+        self.capture_start_packets = self.packet_count
+        self._set_operation_state("capturing", interface)
+        self._update_overview()
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
         self.health_after_id = self.root.after(300, self._check_capture_health, interface)
@@ -682,11 +901,9 @@ class PacketSnifferApp:
         self.health_after_id = self.root.after(300, self._check_capture_health, interface)
 
     def _show_capture_error(self, interface, exc):
-        messagebox.showerror(
-            "Capture Error",
-            f"Could not start capture on {interface}.\n\n{exc}\n\nPacket capture usually requires root/administrator privileges.",
-        )
-        self.status.config(text="Ready")
+        messagebox.showerror("Capture could not start",
+            "Capture could not start on {}.\n\nCause:\n{}\n\nSuggested action:\nCheck the selected interface and capture permissions. Packet capture may require administrator privileges.".format(interface, exc))
+        self._set_operation_state("error", "capture could not start")
 
     def stop_capture(self):
         if not self.sniffer.running:
@@ -695,7 +912,10 @@ class PacketSnifferApp:
 
         self.sniffer.stop()
         self._cancel_health_check()
-        self.status.config(text="Capture Stopped")
+        self.bandwidth_start_time = None
+        self.capture_start_packets = None
+        self._set_operation_state("completed", "capture stopped")
+        self._update_overview()
         self.start_button.config(state="normal")
         self.stop_button.config(state="disabled")
 
@@ -879,6 +1099,8 @@ class PacketSnifferApp:
             if elapsed > 0:
                 kbps = (self.bandwidth_bytes / 1024) / elapsed
                 self.bandwidth.config(text=f"Bandwidth : {kbps:.1f} KB/s")
+        self._refresh_statistics_report()
+        self._update_overview()
 
     def _row_matches_display(self, row):
         protocol = self.display_protocol_var.get() if self.display_protocol_var is not None else "ALL"
@@ -1072,12 +1294,50 @@ class PacketSnifferApp:
         dialog.title(f"Decode Packet #{row['id']}")
         dialog.configure(bg=PANEL_BG)
         dialog.geometry("720x640")
+        dialog.minsize(600, 500)
         dialog.transient(self.root)
+
+        packet_meta = row.get("metadata", {})
+        header = tk.Frame(dialog, bg=PANEL_BG)
+        header.pack(fill="x", padx=12, pady=(10, 0))
+        tk.Label(header, text="Packet #{}  ·  {}".format(row['id'], packet_meta.get("protocol", "Unknown")),
+                 bg=PANEL_BG, fg="white", font=(FONT_FAMILY, SIZES["font_subtitle"], "bold")).pack(anchor="w")
+        tk.Label(header, text="{}  →  {}    {}".format(packet_meta.get("src", "?"), packet_meta.get("dst", "?"), packet_meta.get("timestamp", "")),
+                 bg=PANEL_BG, fg="#A0A0A0", font=(FONT_FAMILY, SIZES["font_small"])).pack(anchor="w", pady=(2, 0))
+
+        mode_bar = tk.Frame(dialog, bg=PANEL_BG)
+        mode_bar.pack(fill="x", padx=12, pady=(8, 0))
+        tk.Label(mode_bar, text="View", bg=PANEL_BG, fg="white").pack(side="left")
+        mode_var = tk.StringVar(value="Beginner")
+        mode_combo = ttk.Combobox(mode_bar, textvariable=mode_var, values=("Beginner", "Analyst", "Technical / Raw"),
+                                  state="readonly", width=18)
+        mode_combo.pack(side="left", padx=8)
 
         notebook = ttk.Notebook(dialog)
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # ---- Tab 1: layer-by-layer field dissection ----
+        # ---- Beginner summary: facts are drawn from the structured decode ----
+        summary_frame = tk.Frame(notebook, bg=PANEL_BG)
+        notebook.add(summary_frame, text="Summary")
+        beginner = decoder_view_model(decoded, "Beginner")["summary"]
+        summary_text = tk.Text(summary_frame, bg=TABLE_BG, fg="white", wrap="word", relief="flat", padx=16, pady=14)
+        summary_text.pack(fill="both", expand=True, padx=10, pady=10)
+        summary_text.insert("end", "WHAT HAPPENED?\n{}\n\nPROTOCOL STACK\n{}\n\nWHY IT MATTERS\n{}\n\nINSPECT NEXT\n{}\n".format(
+            beginner["what_happened"], "  →  ".join(beginner["protocol_stack"]) or "No decoded layers",
+            beginner["why_it_matters"], beginner["inspect_next"]))
+        summary_text.insert("end", "\nWHAT THESE PROTOCOLS DO\n")
+        for name in beginner["protocol_stack"]:
+            explanation = explain_protocol(name)
+            summary_text.insert("end", "{}: {}\n".format(name, explanation["description"]))
+        if beginner["findings"]:
+            summary_text.insert("end", "\nHEURISTIC INDICATORS\nThese are evidence patterns, not confirmed threats.\n")
+            for item in beginner["findings"]:
+                summary_text.insert("end", "• {}\n".format(item))
+        else:
+            summary_text.insert("end", "\nSECURITY\nNo configured payload patterns were reported. This is not a guarantee of safety.\n")
+        summary_text.configure(state="disabled")
+
+        # ---- Technical layer-by-layer field dissection ----
 
         layers_frame = tk.Frame(notebook, bg=PANEL_BG)
         notebook.add(layers_frame, text="Layers")
@@ -1089,14 +1349,17 @@ class PacketSnifferApp:
         tree.column("value", width=440)
 
         tree_scroll = ttk.Scrollbar(layers_frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=tree_scroll.set)
+        tree_xscroll = ttk.Scrollbar(layers_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=tree_scroll.set, xscrollcommand=tree_xscroll.set)
         tree.pack(side="left", fill="both", expand=True)
         tree_scroll.pack(side="right", fill="y")
+        tree_xscroll.pack(side="bottom", fill="x")
 
-        for layer in decoded["layers"]:
+        for layer in decoder_view_model(decoded, "Technical / Raw")["layers"]:
             layer_node = tree.insert("", "end", text=layer["name"], open=True)
             for field_name, field_value in layer["fields"]:
                 tree.insert(layer_node, "end", text=field_name, values=(field_value,))
+
 
         # ---- Tab 2: application-layer decode (HTTP / TLS) ----
 
@@ -1106,7 +1369,7 @@ class PacketSnifferApp:
         app_text = tk.Text(app_frame, bg=TABLE_BG, fg="white", wrap="word", relief="flat")
         app_text.pack(fill="both", expand=True, padx=10, pady=10)
 
-        application = decoded["application"]
+        application = decoder_view_model(decoded, "Analyst")["application"]
 
         if application is None:
             app_text.insert(
@@ -1171,6 +1434,26 @@ class PacketSnifferApp:
 
         app_text.configure(state="disabled")
 
+        raw_frame = tk.Frame(notebook, bg=PANEL_BG)
+        notebook.add(raw_frame, text="Payload / Raw")
+        raw_text = tk.Text(raw_frame, bg=TABLE_BG, fg="white", wrap="none", relief="flat")
+        raw_y = ttk.Scrollbar(raw_frame, orient="vertical", command=raw_text.yview)
+        raw_x = ttk.Scrollbar(raw_frame, orient="horizontal", command=raw_text.xview)
+        raw_text.configure(yscrollcommand=raw_y.set, xscrollcommand=raw_x.set)
+        raw_text.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=(10, 0))
+        raw_y.grid(row=0, column=1, sticky="ns", pady=(10, 0))
+        raw_x.grid(row=1, column=0, sticky="ew", padx=(10, 0))
+        raw_frame.grid_rowconfigure(0, weight=1)
+        raw_frame.grid_columnconfigure(0, weight=1)
+        payload_view = decoded["payload"]
+        if payload_view["present"]:
+            raw_text.insert("end", "Payload length: {} bytes{}\n\nASCII\n{}\n\nHEX\n{}\n".format(
+                payload_view["length"], " (truncated preview)" if payload_view["truncated"] else "",
+                payload_view["ascii"], payload_view["hex"]))
+        else:
+            raw_text.insert("end", "No Raw payload layer was available in this packet.")
+        raw_text.configure(state="disabled")
+
         # ---- Tab 3: payload security findings ----
 
         security_frame = tk.Frame(notebook, bg=PANEL_BG)
@@ -1196,8 +1479,16 @@ class PacketSnifferApp:
                     security_frame,
                     text=f"\u26a0 {finding}",
                     bg=PANEL_BG, fg=ERROR, wraplength=650, justify="left", anchor="w",
-                    font=("Segoe UI", 10, "bold"),
+                    font=(FONT_FAMILY, SIZES["font_body"], "bold"),
                 ).pack(anchor="w", padx=15, pady=(10, 2))
+
+        def select_mode(event=None):
+            target = {"Beginner": 0, "Analyst": 2, "Technical / Raw": 1}.get(mode_var.get(), 0)
+            notebook.select(target)
+
+        mode_combo.bind("<<ComboboxSelected>>", select_mode)
+        notebook.select(0)
+        apply_tk_theme(dialog, self.config.get("theme", "dark"))
 
     def search_packets(self):
         self.apply_display_filter()
@@ -1256,23 +1547,25 @@ class PacketSnifferApp:
             self.pcap_loading = True
             self.new_capture()
             self.cancel_pcap_button.config(state="normal")
-            self.status.config(text="Loading PCAP: 0 packets processed (cancel in Investigation)")
+            self.cancel_load_button.config(state="normal")
+            self._set_operation_state("loading", "0 packets processed")
             self._schedule_io_poll()
             return
         if operation == "load_batch":
             for packet in value:
                 self._process_packet(packet, refresh=False, update_stats=False)
-            self.status.config(text="Loading PCAP: {:,} packets processed (cancel in Investigation)".format(self.packet_count))
+            self._set_operation_state("loading", "{:,} packets processed".format(self.packet_count))
             self._schedule_io_poll()
             return
         if operation == "load_done":
             self.io_busy = False
             self.pcap_loading = False
             self.cancel_pcap_button.config(state="disabled")
+            self.cancel_load_button.config(state="disabled")
             self._refresh_packet_table()
             self._update_statistics()
             suffix = " (cancelled)" if self.pcap_cancel_event.is_set() else ""
-            self.status.config(text="Loaded {:,} packets{} | Displayed {:,}".format(self.packet_count, suffix, len(self._visible_records())))
+            self._set_operation_state("completed", "loaded {:,} packets{}".format(self.packet_count, suffix))
             self.analyze_retained_packets()
             return
         if operation == "investigation":
@@ -1280,12 +1573,13 @@ class PacketSnifferApp:
                 return
             self.investigation_busy = False
             if error is not None:
-                self.status.config(text="Investigation failed")
-                messagebox.showerror("Investigation", "Could not analyze retained packets.\n\n{}".format(error))
+                self._set_operation_state("error", "investigation could not be completed")
+                messagebox.showerror("Investigation could not be completed",
+                    "Cause:\n{}\n\nSuggested action:\nRetry with the current retained packet window. Detailed cause is shown above.".format(error))
             else:
                 self.investigation_data = value
                 self._render_investigation_views(value)
-                self.status.config(text="Investigation ready: {:,} retained packets".format(value["packet_count"]))
+                self._set_operation_state("completed", "analyzed {:,} retained packets".format(value["packet_count"]))
             return
 
         self.io_busy = False
@@ -1293,11 +1587,16 @@ class PacketSnifferApp:
             if operation == "load":
                 self.pcap_loading = False
                 self.cancel_pcap_button.config(state="disabled")
+                self.cancel_load_button.config(state="disabled")
                 self._refresh_packet_table()
                 self._update_statistics()
             title = "Open PCAP" if operation == "load" else "Export Error"
-            messagebox.showerror(title, f"Could not process capture.\n\n{error}")
-            self.status.config(text="Ready")
+            if operation == "load":
+                body = "PCAP loading could not be completed.\n\nCause:\n{}\n\nSuggested action:\nCheck that the file exists, is readable, and is a valid capture.".format(error)
+            else:
+                body = "Packet export could not be completed.\n\nCause:\n{}\n\nSuggested action:\nChoose a writable destination and check available disk space.".format(error)
+            messagebox.showerror(title, body)
+            self._set_operation_state("error", "{} failed".format("PCAP load" if operation == "load" else "export"))
             return
 
         if operation == "export":
@@ -1306,7 +1605,7 @@ class PacketSnifferApp:
 
     def create_statusbar(self):
         ai_state = "available" if self.threat_detector.is_available() else "unavailable"
-        self.status = tk.Label(self.root, text=f" Ready | AI: {ai_state}", anchor="w", bg=HEADER_BG, fg="white", font=("Segoe UI", 10))
+        self.status = tk.Label(self.root, text=f"  Idle | AI: {ai_state}", anchor="w", bg=HEADER_BG, fg="white", font=(FONT_FAMILY, SIZES["font_body"]))
         self.status.pack(fill="x", side="bottom")
 
     def new_capture(self):
@@ -1356,7 +1655,7 @@ class PacketSnifferApp:
         self.packet_details.delete("1.0", "end")
         self._refresh_packet_table()
         self._update_statistics()
-        self.status.config(text="New capture prepared")
+        self._set_operation_state("idle", "new capture prepared")
 
     def open_pcap(self):
         if self.io_busy or self._closing:
@@ -1368,8 +1667,9 @@ class PacketSnifferApp:
         self.io_busy = True
         self.pcap_loading = True
         self.cancel_pcap_button.config(state="normal")
+        self.cancel_load_button.config(state="normal")
         self.pcap_cancel_event.clear()
-        self.status.config(text="Loading PCAP...")
+        self._set_operation_state("loading", "starting PCAP reader")
         self._pcap_thread = threading.Thread(target=self._load_pcap_worker, args=(filepath,), daemon=True)
         self._pcap_thread.start()
         self._schedule_io_poll()

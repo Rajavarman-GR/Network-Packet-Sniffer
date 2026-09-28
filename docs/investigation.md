@@ -18,6 +18,12 @@ Packets pass through the same lightweight parser and `PacketManager` used by liv
 
 Investigation reads protocol data from the existing Decoder facade. It does not implement a second DNS/HTTP/TLS parser. A packet ID can be opened from either a flow or evidence row. If the packet is retained but hidden by the current display filter, the GUI clears that filter before selecting it.
 
+## Investigation workspace
+
+The Investigation workspace reports packet, flow, DNS, HTTP, TLS, AI, and heuristic counts for the completed retained-window analysis. Evidence is separated into DNS, HTTP, TLS, AI Findings, Security Findings, and Timeline tabs. Rows include time, evidence type, a concise detail, endpoints, and a packet reference. Double-click a row to select the retained packet in Packets; this uses the existing packet ID index and does not copy packet data. Empty tabs explain why evidence may be absent.
+
+The Overview dashboard summarizes current retained packet counts and recent packets. Flow, byte, and finding measures display as unavailable until investigation has completed; the dashboard does not present missing analysis as zero. Statistics combines current capture counters with investigation results and marks the analyzed scope as the retained window.
+
 ## Missing and partial data
 
 Packets without IP or Raw layers still have records and can appear in conversations when metadata permits. Unavailable AI is represented explicitly. A protocol without a matching Decoder plugin has no application result. Malformed packet objects become a `malformed` analysis record where the parser/Decoder boundary can safely identify the failure. A packet evicted before navigation is unavailable in the GUI.

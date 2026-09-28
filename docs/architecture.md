@@ -9,15 +9,22 @@
 | Retention | `core/packet_manager.py` | FIFO records, monotonic packet IDs, O(1) ID lookup, configured count limit. |
 | Runtime AI | `ai/flow_tracker.py`, `ai/feature_extractor.py`, `ai/detector.py` | Bounded directional context, the unchanged 23-feature vector, and model prediction. |
 | Decoder | `core/decoder.py`, `core/decoders/` | Packet-level layer, protocol, payload, and heuristic inspection through a facade and registry. |
+| Decoder explanations | `core/explanations.py` | Converts structured Decoder facts into conservative beginner-facing descriptions; no packet parsing or Tk dependency. |
 | Unified analysis | `core/analysis.py` | Combines parser metadata, Decoder output, and supplied AI result without generating an AI verdict. |
 | Investigation | `core/investigation.py` | Converts packet analysis into conversations, evidence, talkers, findings, and timeline events. |
 | PCAP | `core/pcap.py` | Context-managed streaming reader and bounded batches with cancellation checks. |
 | GUI | `gui/main_window.py` | User interaction, rendering, navigation, and worker/result coordination. |
+| Presentation models | `gui/presentation.py` | Pure grouping, dashboard metrics, empty-state copy, and operation-state labels; contains no Tk widgets or packet parsing. |
+| Theme | `utils/theme.py` | Shared dark/light semantic tokens and application to ttk and classic Tk widgets. |
 | Research | `training/` | Separate UNSW flow schema, training, independent evaluation, and audit. |
 
 The runtime AI `FlowTracker` groups directed tuples `(src, dst, sport, dport, protocol)`. The analyst investigation engine instead groups canonical endpoint pairs and labels them `bidirectional_conversation`. Neither performs TCP stream reconstruction.
 
 The Decoder registry currently contains DNS, TLS, HTTP, FTP, and ICMP plugins (including ICMPv6). The facade remains the public entry point. It does not depend on Tkinter or AI. Decoder fields, payload previews, and security scans have explicit size limits.
+
+The Decoder dialog presents a Beginner summary first, with Analyst application/payload details and a Technical / Raw layer tree available from the mode selector. The explanation registry maps protocol names and observed fields to short descriptions; it treats protocol presence as context rather than a threat signal. Theme color tokens live in `utils/theme.py`; `utils.constants` keeps backward-compatible aliases into this palette. Dark and light settings retain their existing config values.
+
+The main notebook provides Overview, Packets, Flows, Investigation, and Statistics workspaces. Dashboard and evidence grouping functions live in `gui/presentation.py` so navigation and display models can be tested without Tk. Investigation evidence tables retain stable packet IDs and map evidence selection back to `PacketManager`; no packet objects are copied for presentation. Investigation and overview metrics remain limited to the retained packet window.
 
 ## Packet identity and memory bounds
 

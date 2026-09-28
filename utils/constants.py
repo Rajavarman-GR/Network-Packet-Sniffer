@@ -3,24 +3,18 @@
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 850
 
-# Colors
+# Legacy names remain aliases so callers keep their existing API while the
+# semantic palette has one source of truth in utils.theme.
+from utils.theme import get_tokens
 
-DARK_BG = "#1e1e2e"
-
-HEADER_BG = "#181825"
-
-PANEL_BG = "#252535"
-
-TABLE_BG = "#2d2d44"
-
-TEXT_COLOR = "#FFFFFF"
-
-PRIMARY = "#3B82F6"
-
-SUCCESS = "#16A34A"
-
-ERROR = "#DC2626"
-
-WARNING = "#F59E0B"
-
-INFO = "#0EA5E9"
+_DARK = get_tokens("dark")
+DARK_BG = _DARK["background"]
+HEADER_BG = _DARK["navigation"]
+PANEL_BG = _DARK["surface"]
+TABLE_BG = _DARK["table"]
+TEXT_COLOR = _DARK["text"]
+PRIMARY = _DARK["accent"]
+SUCCESS = _DARK["success"]
+ERROR = _DARK["danger"]
+WARNING = _DARK["warning"]
+INFO = _DARK["info"]

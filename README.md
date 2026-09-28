@@ -37,12 +37,14 @@ Packet -> Decoder facade -> registry/plugins
                       Investigation engine
                               |
                     Tkinter analyst views
-                 Packets / Flows / Investigation / Statistics
+           Overview / Packets / Flows / Investigation / Statistics
 
 PCAP reader -> bounded batches -> same packet manager and analysis path
 ```
 
 The parser provides lightweight metadata. The Decoder handles packet-level protocol dissection. Runtime AI tracks traffic context and predicts independently. Unified analysis and investigation coordinate those outputs; they do not replace their implementations. Tkinter widgets are updated on the UI thread from worker results.
+
+The primary workspaces are **Overview**, **Packets**, **Flows**, **Investigation**, and **Statistics**. Overview summarizes retained traffic and clearly marks investigation-only measures unavailable until analysis has run. Investigation groups DNS, HTTP, TLS, AI findings, heuristic security findings, and a chronological timeline; double-click an evidence row to return to its packet. Flows are bidirectional conversations, not TCP stream reconstructions. Statistics describe captured counts and, when available, the retained investigation window.
 
 See [architecture](docs/architecture.md) for module responsibilities and worker lifecycles.
 
@@ -56,7 +58,7 @@ The runtime detector consumes the existing 23-feature schema in `ai/feature_extr
 
 ## PCAP and investigation workflow
 
-Open a PCAP from **File → Open PCAP** or press **Ctrl+O**. A worker reads bounded packet batches; a bounded queue applies backpressure. Loading can be cancelled from the Investigation view. Packets use the same parser and retention limit as live capture.
+Open a PCAP from **File → Open PCAP**, the top-bar **Open PCAP** button, or press **Ctrl+O**. A worker reads bounded packet batches; a bounded queue applies backpressure. Loading progress and cancellation are available in the top bar and Investigation view. Packets use the same parser and retention limit as live capture.
 
 After a PCAP load, the retained packets are analyzed in a worker. For live capture, choose **Analyze retained packets** in the Investigation view when you want a current summary. The Flows view groups packets into explicitly bidirectional conversations; it does not reconstruct TCP streams. Double-click flow or evidence rows to navigate to a retained packet. If a display filter hides that packet, navigation clears the filter first.
 
@@ -82,6 +84,23 @@ Typical workflow:
 3. Select a packet to read details; use **Decode Packet** for protocol fields and heuristic findings.
 4. Open Flows or Investigation and double-click evidence to return to its packet.
 5. Use Statistics for retained-packet summaries. Export writes the currently visible packet view.
+
+### Getting Started for Beginners
+
+1. Start the application and select a network interface.
+2. Click **Start** to capture, or choose **File → Open PCAP** to inspect a saved capture.
+3. Select a packet in the Packets view. Source and destination identify endpoints; port numbers commonly identify a service.
+4. Open **Decode Packet** and begin with **Beginner**. Read what happened, the protocol stack, and the suggested next inspection.
+5. Switch to **Analyst** for decoded application data and heuristic indicators, or **Technical / Raw** for Scapy fields and bounded payload bytes.
+6. Use Flows to group related packets into conversations and Investigation to follow evidence back to packets.
+
+The Decoder's explanations summarize observed packet structure. They do not establish that traffic is malicious. Heuristic findings and AI classifications remain identified by their source.
+
+### Decoder modes
+
+The Decoder dialog opens on a concise Beginner summary. Analyst opens decoded application details and payload previews. Technical / Raw opens the complete Scapy layer and field tree; the application details and Payload / Raw tab show bounded ASCII and hex previews. Decoder output limits remain in force.
+
+Dark and light themes use a shared semantic palette across the main workspaces, ttk tables and controls, Tk text areas, and application dialogs. Settings keeps the existing `theme` configuration values (`dark` and `light`).
 
 Shortcuts: **F5** starts capture, **Ctrl+O** opens a PCAP, and **Ctrl+S** exports the current display view.
 

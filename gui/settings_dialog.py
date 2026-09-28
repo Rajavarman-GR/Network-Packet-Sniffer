@@ -4,6 +4,7 @@ from tkinter import messagebox, ttk
 
 from core.interfaces import get_network_interfaces
 from utils.config import MAX_RETAINED_PACKETS, normalize_config, save_config
+from utils.theme import apply_tk_theme
 
 
 class SettingsDialog(tk.Toplevel):
@@ -25,6 +26,7 @@ class SettingsDialog(tk.Toplevel):
         self.timestamp_var = tk.StringVar(value=self.config.get("timestamp_format", "%H:%M:%S"))
 
         self._build_ui()
+        apply_tk_theme(self, self.config.get("theme", "dark"))
 
     def _build_ui(self):
         frame = ttk.Frame(self, padding=12)
