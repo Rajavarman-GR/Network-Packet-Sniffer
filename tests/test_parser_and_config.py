@@ -11,7 +11,7 @@ from ai.model_loader import ModelLoader
 from core.filter_engine import build_bpf_filter
 from core.packet_manager import PacketManager
 from core.parser import get_packet_metadata, get_payload_preview, matches_display_filter, packet_search_text
-from utils.config import default_config, load_config, save_config
+from utils.config import MAX_RETAINED_PACKETS, default_config, load_config, normalize_config, save_config
 
 
 class ParserAndConfigTests(unittest.TestCase):
@@ -37,6 +37,31 @@ class ParserAndConfigTests(unittest.TestCase):
         refreshed = tracker.observe(packet, metadata, timestamp=103)
         self.assertEqual(len(tracker.flows), 1)
         self.assertEqual(refreshed["source_packet_count"], 1)
+
+    def test_flow_tracker_bounds_both_flow_and_endpoint_state(self):
+        tracker = FlowTracker(max_flows=2, max_endpoints=2)
+        for index in range(10):
+            packet = scapy.IP(src="192.0.2.{}".format(index + 1), dst="198.51.100.1") / scapy.UDP(sport=index + 1, dport=53)
+            tracker.observe(packet, get_packet_metadata(packet), timestamp=1000)
+        self.assertLessEqual(len(tracker.flows), 2)
+        self.assertLessEqual(len(tracker.endpoints), 2)
+
+    def test_flow_tracker_self_traffic_does_not_double_count_endpoint_packets(self):
+        packet = scapy.IP(src="192.0.2.1", dst="192.0.2.1") / scapy.UDP(sport=53, dport=53)
+        tracker = FlowTracker()
+        context = tracker.observe(packet, get_packet_metadata(packet), timestamp=1)
+        self.assertEqual(1, context["source_packet_count"])
+        self.assertEqual(1, context["destination_packet_count"])
+
+    def test_flow_tracker_caps_window_timestamps_per_endpoint(self):
+        packet = scapy.IP(src="192.0.2.1", dst="192.0.2.2") / scapy.UDP(sport=1, dport=2)
+        tracker = FlowTracker(max_flows=2)
+        metadata = get_packet_metadata(packet)
+        for _ in range(6100):
+            context = tracker.observe(packet, metadata, timestamp=1000)
+        history = tracker.endpoints["192.0.2.1"]["packet_times"]
+        self.assertEqual(6000, len(history))
+        self.assertEqual(6000, context["source_packet_count"])
 
     def test_missing_model_is_unavailable(self):
         loader = ModelLoader("missing.joblib", "missing.json")
@@ -128,6 +153,25 @@ class ParserAndConfigTests(unittest.TestCase):
         self.assertIsNone(manager.get(first["id"]))
         self.assertEqual(manager.get(second["id"])["packet"], "second")
 
+    def test_packet_manager_lookup_index_tracks_resize_clear_and_ids(self):
+        manager = PacketManager(max_packets=3)
+        first, _ = manager.add("one", {})
+        second, _ = manager.add("two", {})
+        third, _ = manager.add("three", {})
+        manager.set_max_packets(1)
+        self.assertIsNone(manager.get(first["id"]))
+        self.assertIsNone(manager.get(second["id"]))
+        self.assertIs(manager.get(third["id"]), third)
+        manager.clear()
+        next_record, _ = manager.add("four", {})
+        self.assertGreater(next_record["id"], third["id"])
+
+    def test_parser_returns_safe_metadata_for_malformed_packet_values(self):
+        self.assertEqual(0, get_packet_metadata(None)["length"])
+        metadata = get_packet_metadata(object())
+        self.assertEqual("OTHER", metadata["protocol"])
+        self.assertEqual(0, metadata["length"])
+
     def test_filter_engine_supports_dns_and_rejects_invalid_values(self):
         self.assertEqual(build_bpf_filter("DNS"), "(udp port 53 or tcp port 53)")
         self.assertEqual(
@@ -143,6 +187,12 @@ class ParserAndConfigTests(unittest.TestCase):
                 handle.write("not json")
             loaded = load_config(config_path)
             self.assertEqual(loaded, default_config())
+
+    def test_config_normalization_handles_unhashable_fields_and_caps_retention(self):
+        normalized = normalize_config({"theme": [], "default_protocol": {}, "max_packets": MAX_RETAINED_PACKETS + 1})
+        self.assertEqual("dark", normalized["theme"])
+        self.assertEqual("ALL", normalized["default_protocol"])
+        self.assertEqual(MAX_RETAINED_PACKETS, normalized["max_packets"])
 
     def test_display_filter_and_search_fields(self):
         packet = scapy.Ether(src="02:00:00:00:00:01", dst="02:00:00:00:00:02") / scapy.IP(src="192.0.2.1", dst="192.0.2.2") / scapy.TCP(sport=443, dport=50000)

@@ -7,13 +7,17 @@ class PacketManager:
 	def __init__(self, max_packets=10000):
 		self.max_packets = max(1, int(max_packets))
 		self._packets = deque()
+		self._by_id = {}
 		self._next_id = 1
 
 	def add(self, packet, metadata):
 		record = {"id": self._next_id, "packet": packet, **metadata}
 		self._next_id += 1
 		evicted = self._packets.popleft() if len(self._packets) >= self.max_packets else None
+		if evicted is not None:
+			self._by_id.pop(evicted["id"], None)
 		self._packets.append(record)
+		self._by_id[record["id"]] = record
 		return record, evicted
 
 	def get(self, packet_id):
@@ -21,7 +25,7 @@ class PacketManager:
 			packet_id = int(packet_id)
 		except (TypeError, ValueError):
 			return None
-		return next((record for record in self._packets if record["id"] == packet_id), None)
+		return self._by_id.get(packet_id)
 
 	def update(self, packet_id, values):
 		record = self.get(packet_id)
@@ -35,11 +39,13 @@ class PacketManager:
 
 	def clear(self):
 		self._packets.clear()
+		self._by_id.clear()
 
 	def set_max_packets(self, max_packets):
 		self.max_packets = max(1, int(max_packets))
 		while len(self._packets) > self.max_packets:
-			self._packets.popleft()
+			evicted = self._packets.popleft()
+			self._by_id.pop(evicted["id"], None)
 
 	def __len__(self):
 		return len(self._packets)

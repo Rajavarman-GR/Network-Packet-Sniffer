@@ -1,7 +1,8 @@
 """Deterministic flow and protocol evidence summaries over packet records."""
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, timezone
+import math
 
 from core.analysis import analyze_packet
 
@@ -9,7 +10,8 @@ from core.analysis import analyze_packet
 def _time_value(packet, metadata):
     value = getattr(packet, "time", None)
     try:
-        return float(value)
+        result = float(value)
+        return result if math.isfinite(result) else 0.0
     except (TypeError, ValueError):
         text = metadata.get("timestamp")
         try:
@@ -31,20 +33,22 @@ class InvestigationEngine:
     def __init__(self, max_records=10000):
         self.max_records = max(1, int(max_records))
 
-    def analyze(self, records):
-        records = list(records)[-self.max_records:]
+    def analyze(self, records, cancel_event=None):
+        records = deque(records or (), maxlen=self.max_records)
         flows, talkers = {}, defaultdict(lambda: {"packet_count": 0, "byte_count": 0})
         dns, http, tls, findings, timeline, analyses = [], [], [], [], [], []
         for index, record in enumerate(records):
+            if cancel_event is not None and cancel_event.is_set():
+                break
             packet = record.get("packet")
             packet_id = record.get("id", index + 1)
             metadata = dict(record)
             ai_result = record.get("ai_result")
             analysis = analyze_packet(packet, packet_id, metadata, ai_result)
             analyses.append(analysis)
-            src, dst = metadata.get("src", ""), metadata.get("dst", "")
-            sport, dport = metadata.get("sport", ""), metadata.get("dport", "")
-            protocol = metadata.get("protocol", "OTHER")
+            src, dst = str(metadata.get("src") or ""), str(metadata.get("dst") or "")
+            sport, dport = str(metadata.get("sport") or ""), str(metadata.get("dport") or "")
+            protocol = str(metadata.get("protocol") or "OTHER")
             length = _packet_length(packet, metadata)
             ts = _time_value(packet, metadata)
             if src:
@@ -103,7 +107,7 @@ class InvestigationEngine:
                 timeline.append(_event(ts, "security_finding", packet_id, observation.get("message", "Security observation"), finding))
         for flow in flows.values():
             flow["duration"] = max(0.0, flow["last_timestamp"] - flow["first_timestamp"])
-        timeline.sort(key=lambda event: (event["timestamp"], event["packet_id"] or 0, event["event_type"], event["description"]))
+        timeline.sort(key=lambda event: (event["timestamp"], _packet_id_order(event["packet_id"]), event["event_type"], event["description"]))
         return {"analyses": analyses, "flows": sorted(flows.values(), key=lambda f: (f["protocol"], f["source"], f["destination"], f["source_port"], f["destination_port"])),
             "top_talkers": [{"source": host, **values} for host, values in sorted(talkers.items(), key=lambda x: (-x[1]["byte_count"], x[0]))],
             "dns": dns, "http": http, "tls": tls, "findings": findings, "timeline": timeline,
@@ -113,3 +117,10 @@ class InvestigationEngine:
 def _event(timestamp, event_type, packet_id, description, context):
     return {"timestamp": timestamp, "event_type": event_type, "packet_id": packet_id,
         "description": description, "context": context}
+
+
+def _packet_id_order(packet_id):
+    try:
+        return (0, int(packet_id))
+    except (TypeError, ValueError, OverflowError):
+        return (1, str(packet_id))

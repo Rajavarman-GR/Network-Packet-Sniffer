@@ -42,7 +42,7 @@ def extract_features(packet, metadata, context):
         "protocol_icmpv6": float(protocol == "ICMPv6"),
         "protocol_other": float(protocol not in {"TCP", "UDP", "DNS", "ARP", "ICMP", "ICMPv6"}),
     }
-    payload_length = len(bytes(packet[scapy.Raw].load)) if packet.haslayer(scapy.Raw) else 0
+    payload_length = len(packet[scapy.Raw].load or b"") if packet.haslayer(scapy.Raw) else 0
     tcp_flags = int(packet[scapy.TCP].flags) if packet.haslayer(scapy.TCP) else 0
     ttl = 0
     if packet.haslayer(scapy.IP):
@@ -51,7 +51,7 @@ def extract_features(packet, metadata, context):
         ttl = int(packet[scapy.IPv6].hlim or 0)
 
     values = {
-        "packet_length": len(packet),
+        "packet_length": int(metadata.get("length") or len(packet)),
         **protocol_values,
         "source_port": int(metadata.get("sport") or 0),
         "destination_port": int(metadata.get("dport") or 0),

@@ -15,8 +15,9 @@ from core.investigation import InvestigationEngine
 from core.interfaces import get_network_interfaces, resolve_scapy_interface
 from core.packet_manager import PacketManager
 from core.pcap import iter_pcap_batches
-from core.parser import get_packet_metadata, get_payload_preview, matches_display_filter
+from core.parser import get_packet_metadata, get_payload_preview, matches_display_filter, packet_length
 from core.sniffer import PacketSniffer
+from core.worker_queue import put_until_stopped
 from gui.settings_dialog import SettingsDialog
 from utils.config import load_config
 from utils.logger import log_error, log_warning
@@ -37,6 +38,8 @@ from utils.validator import (
     validate_interface,
     validate_protocol,
 )
+
+_AI_RESET = object()
 
 
 class PacketSnifferApp:
@@ -66,16 +69,19 @@ class PacketSnifferApp:
         self.other_count = 0
         self.icmpv6_count = 0
         self.packet_manager = PacketManager(self._configured_max_packets())
-        self.packet_rows = []
         self.packet_queue = queue.Queue(maxsize=1000)
         self.drain_after_id = None
         self.health_after_id = None
         self.io_queue = queue.Queue(maxsize=8)
         self.pcap_cancel_event = threading.Event()
+        self.shutdown_event = threading.Event()
+        self._closing = False
         self.pcap_loading = False
         self.investigation_engine = InvestigationEngine(self._configured_max_packets())
         self.investigation_data = None
         self.investigation_busy = False
+        self.investigation_generation = 0
+        self.investigation_cancel_event = threading.Event()
         self.io_poll_after_id = None
         self.io_busy = False
         self.current_sort_col = None
@@ -315,12 +321,18 @@ class PacketSnifferApp:
         self._render_investigation_views(None)
 
     def analyze_retained_packets(self):
-        if self.investigation_busy:
+        if self.investigation_busy or self._closing:
             return
         records = self.packet_manager.records()
+        self.investigation_generation += 1
+        generation = self.investigation_generation
+        self.investigation_cancel_event = threading.Event()
         self.investigation_busy = True
         self.status.config(text="Analyzing retained packets...")
-        threading.Thread(target=self._investigation_worker, args=(records,), daemon=True).start()
+        self._investigation_thread = threading.Thread(
+            target=self._investigation_worker,
+            args=(records, generation, self.investigation_cancel_event), daemon=True)
+        self._investigation_thread.start()
         self._schedule_io_poll()
 
     def cancel_pcap_load(self):
@@ -328,12 +340,16 @@ class PacketSnifferApp:
             self.pcap_cancel_event.set()
             self.status.config(text="Cancelling PCAP load after current packet batch...")
 
-    def _investigation_worker(self, records):
+    def _investigation_worker(self, records, generation, cancel_event):
         try:
-            result = self.investigation_engine.analyze(records)
-            self.io_queue.put(("investigation", "", result, None))
+            result = self.investigation_engine.analyze(records, cancel_event=cancel_event)
+            self._post_io_result(("investigation", generation, result, None))
         except Exception as exc:
-            self.io_queue.put(("investigation", "", None, exc))
+            self._post_io_result(("investigation", generation, None, exc))
+
+    def _post_io_result(self, result):
+        """Avoid leaving workers blocked on a full result queue during shutdown."""
+        return put_until_stopped(self.io_queue, result, self.shutdown_event)
 
     def _render_investigation_views(self, data):
         for item in self.flow_table.get_children():
@@ -546,12 +562,16 @@ class PacketSnifferApp:
                 packet_id, packet, metadata = self.ai_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
+            if packet_id is _AI_RESET:
+                self.flow_tracker.clear()
+                continue
             try:
                 packet_time = getattr(packet, "time", None)
                 context = self.flow_tracker.observe(packet, metadata, packet_time)
                 features = extract_features(packet, metadata, context)
                 result = self.threat_detector.predict(features)
-            except Exception:
+            except Exception as exc:
+                log_warning("AI packet analysis failed: {}".format(type(exc).__name__))
                 result = {"available": False, "label": "UNAVAILABLE", "confidence": None, "risk_score": None, "model_version": None}
             try:
                 self.ai_result_queue.put_nowait((packet_id, result))
@@ -559,8 +579,12 @@ class PacketSnifferApp:
                 log_warning("AI result queue full; discarding an analysis result")
 
     def _poll_ai_results(self):
+        if self._closing:
+            self.ai_result_after_id = None
+            return
         self.ai_result_after_id = None
-        while True:
+        updated = False
+        for _ in range(250):
             try:
                 packet_id, result = self.ai_result_queue.get_nowait()
             except queue.Empty:
@@ -568,6 +592,7 @@ class PacketSnifferApp:
             record = self.packet_manager.update(packet_id, {"ai_result": result})
             if record is None:
                 continue
+            updated = True
             label = result.get("label", "UNAVAILABLE")
             if result.get("available") and label == "SUSPICIOUS":
                 self.suspicious_count += 1
@@ -582,6 +607,7 @@ class PacketSnifferApp:
                 self.packet_table.item(item_id, tags=record_tags)
             if self.packet_table.selection() and self.packet_table.selection()[0] == item_id:
                 self.show_packet_details(None)
+        if updated:
             self._update_statistics()
         if self.ai_thread is not None and not self.ai_stop_event.is_set():
             self.ai_result_after_id = self.root.after(100, self._poll_ai_results)
@@ -634,7 +660,7 @@ class PacketSnifferApp:
 
     def _check_capture_health(self, interface):
         self.health_after_id = None
-        if not self.sniffer.running:
+        if self._closing or not self.sniffer.running:
             return
 
         capture = self.sniffer.sniffer
@@ -674,6 +700,8 @@ class PacketSnifferApp:
         self.stop_button.config(state="disabled")
 
     def packet_callback(self, packet):
+        if self.shutdown_event.is_set():
+            return
         try:
             self.packet_queue.put_nowait(packet)
         except queue.Full:
@@ -690,35 +718,47 @@ class PacketSnifferApp:
         self.health_after_id = None
 
     def _schedule_packet_drain(self):
-        if self.drain_after_id is None:
+        if self.drain_after_id is None and not self._closing:
             self.drain_after_id = self.root.after(50, self._drain_packet_queue)
 
     def _drain_packet_queue(self):
+        if self._closing:
+            self.drain_after_id = None
+            return
         self.drain_after_id = None
+        processed = 0
         for _ in range(200):
             try:
                 packet = self.packet_queue.get_nowait()
             except queue.Empty:
                 break
-            self._process_packet(packet, is_live=True)
+            self._process_packet(packet, is_live=True, update_stats=False)
+            processed += 1
+
+        if processed:
+            self._update_statistics()
 
         if self.sniffer.running or not self.packet_queue.empty():
             self._schedule_packet_drain()
 
-    def _process_packet(self, packet, is_live=False, refresh=True):
+    def _process_packet(self, packet, is_live=False, refresh=True, update_stats=True):
         self.packet_count += 1
         if is_live:
-            self.bandwidth_bytes += len(packet)
-        metadata = get_packet_metadata(packet, self.config.get("timestamp_format", "%H:%M:%S"))
+            self.bandwidth_bytes += packet_length(packet)
+        try:
+            metadata = get_packet_metadata(packet, self.config.get("timestamp_format", "%H:%M:%S"))
+        except (AttributeError, TypeError, ValueError, IndexError, OverflowError) as exc:
+            log_warning("Packet metadata parsing failed: {}".format(type(exc).__name__))
+            metadata = get_packet_metadata(None)
 
-        record = self._append_packet_row(packet, metadata, refresh=refresh)
+        record = self._append_packet_row(packet, metadata, refresh=refresh, update_stats=update_stats)
         if self.ai_thread is not None:
             try:
                 self.ai_queue.put_nowait((record["id"], packet, metadata))
             except queue.Full:
                 log_warning("AI queue full; skipping threat analysis for a packet")
 
-    def _append_packet_row(self, packet, metadata, refresh=True):
+    def _append_packet_row(self, packet, metadata, refresh=True, update_stats=True):
         counters = {
             "TCP": "tcp_count",
             "UDP": "udp_count",
@@ -741,8 +781,6 @@ class PacketSnifferApp:
             "risk_score": None,
             "model_version": None,
         }
-        self.packet_rows = self.packet_manager.records()
-
         if evicted is not None and self.packet_table.exists(str(evicted["id"])):
             self.packet_table.delete(str(evicted["id"]))
 
@@ -750,7 +788,8 @@ class PacketSnifferApp:
             self._insert_packet_row(record)
         elif refresh:
             self._update_result_label(len(self.packet_table.get_children()))
-        self._update_statistics()
+        if update_stats:
+            self._update_statistics()
         return record
 
     def _insert_packet_row(self, row):
@@ -778,7 +817,7 @@ class PacketSnifferApp:
         for item in self.packet_table.get_children():
             self.packet_table.delete(item)
 
-        rows = [row for row in self.packet_rows if self._row_matches_display(row)]
+        rows = [row for row in self.packet_manager.records() if self._row_matches_display(row)]
         if self.current_sort_col:
             rows = sorted(
                 rows,
@@ -970,11 +1009,23 @@ class PacketSnifferApp:
             details.extend(["", "===== Hex =====", payload["hex"], ""])
 
         details.extend(["===== Packet Hex Dump =====", ""])
-        packet_bytes = bytes(packet)
-        hexdump_output = scapy.hexdump(packet_bytes[:4096], dump=True)
-        details.append(hexdump_output if hexdump_output is not None else "")
-        if len(packet_bytes) > 4096:
-            details.append("[Packet hex truncated to first 4096 bytes]")
+        original = getattr(packet, "original", None)
+        if isinstance(original, (bytes, bytearray, memoryview)):
+            packet_preview = bytes(original[:4096])
+            packet_truncated = len(original) > 4096
+        elif packet_length(packet) <= 4096:
+            packet_preview = bytes(packet)
+            packet_truncated = False
+        else:
+            packet_preview = None
+            packet_truncated = True
+        if packet_preview is None:
+            details.append("[Packet hex omitted because the original bytes were unavailable for this large packet]")
+        else:
+            hexdump_output = scapy.hexdump(packet_preview, dump=True)
+            details.append(hexdump_output if hexdump_output is not None else "")
+        if packet_truncated:
+            details.append("[Packet hex limited to the first 4096 bytes]")
 
         self.packet_details.insert("end", "\n".join(details))
 
@@ -1169,11 +1220,12 @@ class PacketSnifferApp:
 
         self.io_busy = True
         self.status.config(text=f"Exporting {len(rows):,} filtered packets...")
-        threading.Thread(
+        self._export_thread = threading.Thread(
             target=self._export_worker,
             args=(filepath, [row["packet"] for row in rows], len(rows)),
             daemon=True,
-        ).start()
+        )
+        self._export_thread.start()
         self._schedule_io_poll()
 
     def _export_worker(self, filepath, packets, packet_count):
@@ -1182,13 +1234,16 @@ class PacketSnifferApp:
             result = ("export", filepath, packet_count, None)
         except Exception as exc:
             result = ("export", filepath, packet_count, exc)
-        self.io_queue.put(result)
+        self._post_io_result(result)
 
     def _schedule_io_poll(self):
-        if self.io_poll_after_id is None:
+        if self.io_poll_after_id is None and not self._closing:
             self.io_poll_after_id = self.root.after(50, self._poll_io_results)
 
     def _poll_io_results(self):
+        if self._closing:
+            self.io_poll_after_id = None
+            return
         self.io_poll_after_id = None
         try:
             operation, filepath, value, error = self.io_queue.get_nowait()
@@ -1200,14 +1255,13 @@ class PacketSnifferApp:
         if operation == "load_start":
             self.pcap_loading = True
             self.new_capture()
-            self.pcap_cancel_event.clear()
             self.cancel_pcap_button.config(state="normal")
             self.status.config(text="Loading PCAP: 0 packets processed (cancel in Investigation)")
             self._schedule_io_poll()
             return
         if operation == "load_batch":
             for packet in value:
-                self._process_packet(packet, refresh=False)
+                self._process_packet(packet, refresh=False, update_stats=False)
             self.status.config(text="Loading PCAP: {:,} packets processed (cancel in Investigation)".format(self.packet_count))
             self._schedule_io_poll()
             return
@@ -1222,6 +1276,8 @@ class PacketSnifferApp:
             self.analyze_retained_packets()
             return
         if operation == "investigation":
+            if filepath != self.investigation_generation:
+                return
             self.investigation_busy = False
             if error is not None:
                 self.status.config(text="Investigation failed")
@@ -1237,6 +1293,8 @@ class PacketSnifferApp:
             if operation == "load":
                 self.pcap_loading = False
                 self.cancel_pcap_button.config(state="disabled")
+                self._refresh_packet_table()
+                self._update_statistics()
             title = "Open PCAP" if operation == "load" else "Export Error"
             messagebox.showerror(title, f"Could not process capture.\n\n{error}")
             self.status.config(text="Ready")
@@ -1274,27 +1332,34 @@ class PacketSnifferApp:
         self.bandwidth_start_time = None
         self.packet_manager.clear()
         self.investigation_engine.max_records = self.max_packets
+        self.investigation_generation += 1
+        self.investigation_cancel_event.set()
+        self.investigation_cancel_event = threading.Event()
+        self.investigation_busy = False
         self.investigation_data = None
         self._render_investigation_views(None)
-        self.flow_tracker.clear()
         while not self.ai_queue.empty():
             try:
                 self.ai_queue.get_nowait()
             except queue.Empty:
                 break
+        if self.ai_thread is not None and not self.ai_stop_event.is_set():
+            try:
+                self.ai_queue.put_nowait((_AI_RESET, None, None))
+            except queue.Full:
+                log_warning("AI queue full; runtime flow context could not be reset")
         while not self.ai_result_queue.empty():
             try:
                 self.ai_result_queue.get_nowait()
             except queue.Empty:
                 break
-        self.packet_rows = []
         self.packet_details.delete("1.0", "end")
         self._refresh_packet_table()
         self._update_statistics()
         self.status.config(text="New capture prepared")
 
     def open_pcap(self):
-        if self.io_busy:
+        if self.io_busy or self._closing:
             return
         filepath = filedialog.askopenfilename(defaultextension=".pcap", filetypes=[("PCAP files", "*.pcap"), ("All files", "*.*")])
         if not filepath:
@@ -1305,19 +1370,22 @@ class PacketSnifferApp:
         self.cancel_pcap_button.config(state="normal")
         self.pcap_cancel_event.clear()
         self.status.config(text="Loading PCAP...")
-        threading.Thread(target=self._load_pcap_worker, args=(filepath,), daemon=True).start()
+        self._pcap_thread = threading.Thread(target=self._load_pcap_worker, args=(filepath,), daemon=True)
+        self._pcap_thread.start()
         self._schedule_io_poll()
 
     def _load_pcap_worker(self, filepath):
         try:
-            self.io_queue.put(("load_start", filepath, None, None))
+            if not self._post_io_result(("load_start", filepath, None, None)):
+                return
             count = 0
             for batch in iter_pcap_batches(filepath, cancel_event=self.pcap_cancel_event):
-                self.io_queue.put(("load_batch", filepath, batch, None))
+                if not self._post_io_result(("load_batch", filepath, batch, None)):
+                    return
                 count += len(batch)
-            self.io_queue.put(("load_done", filepath, count, None))
+            self._post_io_result(("load_done", filepath, count, None))
         except Exception as exc:
-            self.io_queue.put(("load", filepath, None, exc))
+            self._post_io_result(("load", filepath, None, exc))
 
     def open_settings(self):
         SettingsDialog(self.root, self.config, self._apply_settings)
@@ -1329,19 +1397,34 @@ class PacketSnifferApp:
         self.max_packets = self._configured_max_packets()
         self.packet_manager.set_max_packets(self.max_packets)
         self.investigation_engine.max_records = self.max_packets
-        self.packet_rows = self.packet_manager.records()
         self._refresh_packet_table()
         self._update_statistics()
         self.apply_theme()
         self.status.config(text="Settings updated")
 
     def on_closing(self):
+        if self._closing:
+            return
+        self._closing = True
+        self.shutdown_event.set()
+        self.pcap_cancel_event.set()
+        self.investigation_cancel_event.set()
+        self.ai_stop_event.set()
         try:
             self.stop_capture()
-            self.ai_stop_event.set()
-            if self.ai_result_after_id is not None:
-                self.root.after_cancel(self.ai_result_after_id)
         except Exception as exc:
-            log_error(f"Shutdown error: {exc}")
+            log_error("Shutdown error: {}".format(type(exc).__name__))
+        for callback_id in (self.ai_result_after_id, self.drain_after_id,
+                            self.health_after_id, self.io_poll_after_id):
+            if callback_id is not None:
+                try:
+                    self.root.after_cancel(callback_id)
+                except tk.TclError:
+                    pass
+        for worker in (self.ai_thread, getattr(self, "_pcap_thread", None),
+                       getattr(self, "_investigation_thread", None),
+                       getattr(self, "_export_thread", None)):
+            if worker is not None and worker.is_alive():
+                worker.join(timeout=0.15)
         self.root.destroy()
 

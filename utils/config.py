@@ -2,6 +2,8 @@ import json
 import os
 import time
 
+MAX_RETAINED_PACKETS = 20000
+
 
 def default_config():
     return {
@@ -26,14 +28,17 @@ def normalize_config(config):
     normalized = defaults.copy()
     normalized.update({key: value for key, value in config.items() if key in defaults})
     try:
-        normalized["max_packets"] = max(1, int(normalized["max_packets"]))
-    except (TypeError, ValueError):
+        normalized["max_packets"] = min(MAX_RETAINED_PACKETS, max(1, int(normalized["max_packets"])))
+    except (TypeError, ValueError, OverflowError):
         normalized["max_packets"] = defaults["max_packets"]
-    if normalized["theme"] not in {"dark", "light"}:
+    if not isinstance(normalized["theme"], str) or normalized["theme"] not in {"dark", "light"}:
         normalized["theme"] = defaults["theme"]
-    if normalized["default_protocol"] not in {"ALL", "TCP", "UDP", "ICMP", "ARP", "DNS", "ICMPv6"}:
+    if (not isinstance(normalized["default_protocol"], str)
+            or normalized["default_protocol"] not in {"ALL", "TCP", "UDP", "ICMP", "ARP", "DNS", "ICMPv6"}):
         normalized["default_protocol"] = defaults["default_protocol"]
     normalized["auto_scroll"] = bool(normalized["auto_scroll"])
+    if not isinstance(normalized["timestamp_format"], str):
+        normalized["timestamp_format"] = defaults["timestamp_format"]
     try:
         time.strftime(normalized["timestamp_format"])
     except (TypeError, ValueError):

@@ -3,7 +3,7 @@ import time
 from tkinter import messagebox, ttk
 
 from core.interfaces import get_network_interfaces
-from utils.config import normalize_config, save_config
+from utils.config import MAX_RETAINED_PACKETS, normalize_config, save_config
 
 
 class SettingsDialog(tk.Toplevel):
@@ -80,6 +80,9 @@ class SettingsDialog(tk.Toplevel):
         if max_packets < 1:
             messagebox.showerror("Invalid settings", "Maximum packets must be at least 1.", parent=self)
             return
+        if max_packets > MAX_RETAINED_PACKETS:
+            messagebox.showerror("Invalid settings", "Maximum packets cannot exceed {:,}.".format(MAX_RETAINED_PACKETS), parent=self)
+            return
 
         timestamp_format = self.timestamp_var.get().strip() or "%H:%M:%S"
         try:
@@ -100,9 +103,13 @@ class SettingsDialog(tk.Toplevel):
         )
         self.config = normalize_config(self.config)
 
-        save_config(self.config)
-        if self.on_save is not None:
-            self.on_save(self.config)
+        try:
+            save_config(self.config)
+            if self.on_save is not None:
+                self.on_save(self.config)
+        except OSError as exc:
+            messagebox.showerror("Settings could not be saved", str(exc), parent=self)
+            return
         self.destroy()
 
     def _cancel(self):
