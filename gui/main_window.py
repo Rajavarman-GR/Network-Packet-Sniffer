@@ -380,13 +380,15 @@ class PacketSnifferApp:
             empty_label = tk.Label(frame, text="{}\n{}".format(heading, helper), bg=PANEL_BG, fg="#A0A0A0", justify="left", anchor="w")
             empty_label.pack(fill="x", padx=12, pady=10)
             self.evidence_empty_labels[group] = empty_label
-            table = ttk.Treeview(frame, columns=("Time", "Type", "Details", "Source", "Destination", "Packet"), show="headings")
+            # The tab frame packs its empty-state label and the table container.
+            # Keep the table and its scrollbars together under the grid-managed container.
+            table_box = ttk.Frame(frame)
+            table_box.pack(fill="both", expand=True, padx=6, pady=6)
+            table = ttk.Treeview(table_box, columns=("Time", "Type", "Details", "Source", "Destination", "Packet"), show="headings")
             widths = {"Time": 145, "Type": 150, "Details": 360, "Source": 165, "Destination": 165, "Packet": 85}
             for column in table["columns"]:
                 table.heading(column, text=column)
                 table.column(column, width=widths[column], minwidth=70, anchor="w", stretch=column in {"Details", "Source", "Destination"})
-            table_box = ttk.Frame(frame)
-            table_box.pack(fill="both", expand=True, padx=6, pady=6)
             yscroll = ttk.Scrollbar(table_box, orient="vertical", command=table.yview)
             xscroll = ttk.Scrollbar(table_box, orient="horizontal", command=table.xview)
             table.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
