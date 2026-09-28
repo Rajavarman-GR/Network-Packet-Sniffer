@@ -1,19 +1,42 @@
-# Testing and validation
+# Testing and Validation
 
-From the repository root, use the repository environment when present:
+The repository contains **134 tests** in 12 `unittest` modules. The test files use synthetic Scapy packets/PCAPs and temporary fixtures; they do not require live traffic or the UNSW dataset/model artifacts.
+
+| Module | Tests | Coverage |
+|---|---:|---|
+| `tests/test_dataset_adapter.py` | 6 | Runtime feature CSV columns, numeric conversion, label normalization, missing/extra/duplicate/invalid data. |
+| `tests/test_decoder.py` | 35 | Plugin registration/detection, DNS/HTTP/TLS/FTP/ICMP decoding, malformed and truncated payloads, output limits and heuristic findings. |
+| `tests/test_investigation.py` | 4 | Bidirectional grouping, protocol evidence, findings separation, IDs/timeline/retention/cancellation. |
+| `tests/test_parser_and_config.py` | 19 | Packet metadata, IPv4/IPv6/ARP, filter/search text, malformed packet fields, previews, FlowTracker cap/expiry/self-traffic, model compatibility, config normalization. |
+| `tests/test_pcap_stream.py` | 4 | Batch size, cancellation, malformed input, and file descriptor cleanup. |
+| `tests/test_product_presentation.py` | 12 | Beginner explanations, Decoder/dashboard/evidence models, empty states, theme token/config compatibility. |
+| `tests/test_research.py` | 3 | Dataset metadata/hash summaries, feature importance, report formatting/data. |
+| `tests/test_unsw_audit.py` | 8 | Training-only audit restrictions, stratified split, feature variants and internal validation. |
+| `tests/test_unsw_flow_schema.py` | 15 | Exact UNSW header/row validation, targets, data typing and path-backed iteration. |
+| `tests/test_unsw_model_pipeline.py` | 15 | Pipeline structure, numeric/categorical transforms, schema guard, target metadata and separation. |
+| `tests/test_unsw_training.py` | 11 | Training artifacts, output safeguards, source hashes/metadata and no-refit evaluation behavior. |
+| `tests/test_worker_queue.py` | 2 | Bounded-queue backpressure and producer exit on shutdown. |
+
+The suite includes malformed packet and PCAP cases, truncated payloads, thread/queue shutdown behavior, Decoder edge cases, AI absence/schema behavior, and UNSW input/artifact validation. It does not assert a real detector's accuracy; no runtime model or dataset is bundled. It does not exercise an actual Npcap capture session or a full interactive GUI launch. GUI automated coverage is limited to pure presentation models and theme/token behavior, not end-to-end widget navigation.
+
+## Local commands
 
 ```powershell
-.venv\Scripts\python.exe -m unittest discover -v
 .venv\Scripts\python.exe -m compileall -q .
+.venv\Scripts\python.exe -m unittest discover -v
 git diff --check
 ```
 
-On a host without `.venv`, use `python` in place of `.venv\Scripts\python.exe`. The declared dependencies are in `requirements.txt`; avoid upgrading packages just to run validation.
+The system `python` can be used if the project packages are installed there. Do not install or upgrade packages only to satisfy one local run without checking the project's declared `requirements.txt` and environment first.
 
-Tests use synthetic Scapy packets and PCAPs. They do not need live network traffic. The GitHub Actions workflow installs `requirements.txt` on Ubuntu with Python 3.11, compiles the repository, and runs `python -m unittest discover -v`.
+## CI
 
-On some managed Windows hosts, Scapy import may attempt Npcap interface discovery and tests using `TemporaryDirectory` may fail because the process cannot access the configured system temp directory or Scapy's user cache. Use a writable scratch/cache directory and an offline Scapy interface/route test shim if the host requires them; keep such setup outside production code and do not skip or weaken tests. A full validation report should distinguish these environment failures from assertion failures. This repository does not ship an offline Scapy shim.
+`.github/workflows/tests.yml` checks out the repository, installs Python 3.11 and `requirements.txt` on Ubuntu, runs `python -m compileall .`, then `python -m unittest discover -v` on push and pull request.
 
-The Tkinter UI is a desktop application and requires an interactive Windows session for visual smoke testing. Syntax and pure presentation-model tests can run without a display; they do not replace a GUI smoke test.
+## Environment limits
 
-When a test fails, run the specific module while keeping the suite and fixtures intact; do not skip or weaken unrelated tests to get a green run.
+On some managed Windows hosts, importing Scapy can enumerate Npcap devices, and default Scapy cache or system temp directories may be inaccessible. Synthetic tests do not need live interfaces. When required, redirect temporary/cache files to a writable scratch location or use a testing-only offline Scapy interface/route shim; keep that workaround outside production code. Do not skip or weaken tests. Report environment initialization failures separately from assertion failures.
+
+The Tkinter app needs an interactive desktop session for end-to-end GUI validation. Compile success and pure presentation tests do not prove that all widgets can be visually exercised on every OS/window manager.
+
+During this audit, `main.py` was attempted once with the project virtual environment and writable local temp/cache paths. It produced no traceback or window title within about 10 seconds and was stopped; therefore this run did not verify reaching `create_body()` or the Investigation tabs. Startup/visual smoke remains an environment-dependent demonstration check, not a passing result.

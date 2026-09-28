@@ -6,6 +6,8 @@ Open a capture through **File → Open PCAP** or **Ctrl+O**. `core.pcap.iter_pca
 
 Packets pass through the same lightweight parser and `PacketManager` used by live capture. The default retention limit is 10,000, configurable up to 20,000. The displayed captured count can exceed the retained count. Investigation and packet navigation are limited to retained records; loading a larger file does not provide unlimited historical storage.
 
+PCAP completion schedules investigation after the last delivered batch, while the AI worker may still have queued packets. Investigation receives a shallow list of record dictionaries: AI results already attached are included, and results arriving concurrently may affect which records have AI data during a run. After AI labels settle, choose **Analyze retained packets** again to refresh AI findings.
+
 ## Evidence model
 
 - **Flows:** canonical, bidirectional conversations by protocol and endpoint/port pairs. Packet count, byte count, first/last timestamp, duration, and stable packet IDs are included. This is not TCP stream reassembly.

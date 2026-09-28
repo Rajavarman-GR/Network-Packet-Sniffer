@@ -13,7 +13,7 @@ The dataset is not downloaded, generated, or committed by this repository. Featu
 
 ### Runtime contract and compatibility
 
-The training contract is strict: `training/dataset_adapter.py` accepts only the runtime schema and rejects anything that does not match it exactly. This is intentional. A public dataset such as CIC-IDS, UNSW-NB15, or a packet flow export can be used only if its columns can be mapped to the runtime 23 features with equivalent semantics; it must not be renamed or reshaped to invent missing runtime features.
+`training/dataset_adapter.py` is a strict adapter that accepts only the runtime schema and rejects anything that does not match it exactly. The legacy `training/train.py` script does **not** call this adapter: its CSV reader checks for required columns and casts features to floats, but performs less validation. Training with that script fits on all provided rows, does not create a train/test split, and writes to the runtime model location without an overwrite guard. Review any dataset and back up trusted local artifacts before using it.
 
 If a public dataset is not already in the same feature semantics, the adapter raises a clear error rather than guessing a mapping. This repository does not contain a real production dataset and therefore does not train a model from a fabricated or synthetic one.
 
@@ -120,6 +120,13 @@ Recorded held-out results for this dataset split:
 These results describe only this held-out UNSW-NB15 split. They do not establish
 production readiness, generalization to other traffic, or performance of the
 live packet detector.
+
+The manifest above records a previous local run. The generated binary, metadata
+file, and source CSVs are not present in the current checkout, so this repository
+state cannot independently verify or reproduce those metrics. They are not a
+runtime AI result. When setting `UNSW_NB15_DIR` for evaluation, pass both `--train`
+and `--test`: the current evaluator's default training path uses the environment
+variable, while its default test path still uses the hardcoded default directory.
 
 ## Train
 
